@@ -7,7 +7,7 @@
 | 版本 | `0.1.0` |
 | 包名 | `@dsh-external/dsh-memory` |
 | 依据 | 真实 SDK（`@qoder-ai/qoder-agent-sdk@1.0.50`）**＋**安装的 `qodercli` bundle 解码，不是文档推测 |
-| 测试 | **306 项全绿**（`node test/*.test.mjs`）：unit 88 / integration 103 / model 40 / client 33 / architecture 13 / agent 15 / package-shape 10 / resolveMeta 4 |
+| 测试 | **309 项全绿**（`node test/*.test.mjs`）：unit 88 / integration 103 / model 40 / client 33 / architecture 13 / agent 18 / package-shape 10 / resolveMeta 4 |
 | 依赖 | 仅 `@deepseek-ai/schemastery`（提供真正的 `Config` schema）与 `picomatch`（排除规则；Qoder 自己也是这个库） |
 | 设计文档 | [`docs/qoder-memory-model.md`](docs/qoder-memory-model.md)（解出的记忆模型）、[`docs/memory-layers.md`](docs/memory-layers.md)（哪些层归 harness、哪些归本插件） |
 
@@ -89,7 +89,7 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
       enabled: false          # Qoder 的 security.folderTrust.enabled；关＝所有目录都受信任
       folders: []             # 显式信任的目录（绝对路径，或相对会话 cwd）
     generation:
-      maxOutputTokens: 2000
+      maxOutputTokens: 0      # 0＝不给回复设上限，用适配器/模型自己的默认值（见下方说明）
       maxWrites: 4            # 单轮最多写几个文件
       maxWriteBytes: 16384    # 单文件字节上限
       provider: ''            # 留空则用会话自身模型路由
@@ -124,6 +124,15 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
 
 **`native` 与 `custom` 的差别**照 SDK 的规则：`native` 下运行时决定记什么、存哪里、何时加载，
 且**拒绝** `generation.*` / `consumption.*` 的覆盖；`custom` 只覆盖你显式给出的部分。
+
+**关于 `maxOutputTokens`**：SDK 的 `SerializableMemoryGenerationOptions` 里**没有这个字段**
+（只有 `enabled` / `roots` / `prompt` / `turnComplete`），所以它是本插件自己的旋钮，
+`maxWrites` / `maxWriteBytes` 同理。默认 **0＝不设上限**，让适配器套用模型自己的默认值——
+这是唯一对所有模型都成立的选择：pass 是**用工具调用写文件**的，文件正文就在工具参数里，
+固定小上限会让推理模型在吐出工具调用之前就撞上上限（本插件第一版抄了 Qoder `summarizer-*`
+任务类型的 `2e3`，那适用于摘要，不适用于写作）。要控成本就显式设一个值；上限撞上且那一轮
+没有可用的工具调用时，pass 会失败并**在原因里说清**（`generation reached maxOutputTokens…`）；
+若撞上但工具调用已经完整，那些写入**照常落地**再结束循环。
 
 ### 环境变量覆写
 
@@ -353,7 +362,7 @@ node test/harness-env.mjs         # 不是测试：定位 harness 与安装位�
 **环境相关的东西一律自动发现，不写死路径。** harness 会把 `DSH_HOME` / `DSH_PROFILE_DIR`
 导进每个会话，`test/harness-env.mjs` 用它定位已安装的 harness 与本插件；找不到时，
 那几条**依赖安装或会话存储**的检查会自己报 `--  (skipped: …)` 而不是失败（也不假装通过），
-所以纯克隆的仓库仍能跑其余全部检查，只是总数比上面的 306 少几条。
+所以纯克隆的仓库仍能跑其余全部检查，只是总数比上面的 309 少几条。
 
 方法上的三条硬规矩：
 

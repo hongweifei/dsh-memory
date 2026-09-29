@@ -110,7 +110,10 @@ function makeScriptedLlm(script, options = {}) {
         if (step.text !== undefined) {
           yield { type: 'block-end', index, block: { type: 'text', text: step.text } }
         }
-        yield { type: 'finish', reason: { kind: (step.calls ?? []).length > 0 ? 'tool-calls' : 'stop' } }
+        // A step may declare how the round ended: a provider that stops at the output
+        // cap is the case that matters (the model ran out of budget mid-answer).
+        const kind = step.finish ?? ((step.calls ?? []).length > 0 ? 'tool-calls' : 'stop')
+        yield { type: 'finish', reason: { kind } }
       })()
     },
   }
@@ -227,6 +230,55 @@ await test('a refused write with no stated reason still explains the failure', a
   assert.deepEqual(outcome.failedFiles.map((file) => file.path), ['../escape.md'])
   assert.match(outcome.reason, /every attempt was refused/)
   assert.match(outcome.reason, /relative \.md path/, 'the reason carries the refusal itself')
+})
+
+await test('a round cut short by the output cap still lands its tool calls', async () => {
+  // The model hit its output budget AFTER asking for a write. Discarding the round made
+  // every such pass report `failed` even though the write was complete — the exact
+  // "最近一次生成总是 failed" this was found from.
+  const fs = makeFs({})
+  const llm = makeScriptedLlm([
+    {
+      calls: [
+        { id: 'c', name: 'memory_write', arguments: JSON.stringify({ rootId: 'user', path: 'saved.md', content: 'body' }) },
+      ],
+      finish: 'max-tokens',
+    },
+  ])
+  const toolkit = createMemoryToolkit(ctxWith(fs, llm), config, [ROOT], signal)
+  const { outcome, rounds } = await runMemoryAgent(ctxWith(fs, llm), config, route, 'sys', 'go', toolkit, signal)
+  assert.equal(outcome.status, 'saved', 'the write it did ask for landed')
+  assert.deepEqual(outcome.writtenFiles.map((file) => file.path), ['saved.md'])
+  assert.equal(rounds, 1, 'a cut-short round ends the loop: asking again would repeat it')
+  assert.equal(fs.files.get('C:\\home\\.dsh\\memory\\saved.md'), 'body')
+})
+
+await test('a round cut short with nothing usable fails and names the cap', async () => {
+  // The other half: the budget was spent before any tool call arrived, so there is
+  // nothing to land and the reason must say which knob to turn.
+  const fs = makeFs({})
+  const llm = makeScriptedLlm([{ text: 'thinking out loud…', finish: 'max-tokens' }])
+  const toolkit = createMemoryToolkit(ctxWith(fs, llm), config, [ROOT], signal)
+  await assert.rejects(
+    () => runMemoryAgent(ctxWith(fs, llm), config, route, 'sys', 'go', toolkit, signal),
+    /generation reached maxOutputTokens/,
+  )
+})
+
+await test('the reply is left uncapped unless the operator sets a cap', async () => {
+  // The original's memory options have no token field, so the default is this port's
+  // choice: omitting `maxTokens` lets the adapter apply the model's own default, which
+  // is the only budget that fits a model writing file bodies through tool calls.
+  const fs = makeFs({})
+  const llm = makeScriptedLlm([{ text: 'nothing to save' }])
+  const uncapped = { generation: { ...config.generation, maxOutputTokens: 0 } }
+  await runMemoryAgent(ctxWith(fs, llm), uncapped, route, 'sys', 'go', createMemoryToolkit(ctxWith(fs, llm), uncapped, [ROOT], signal), signal)
+  assert.equal('maxTokens' in llm.calls[0], false, 'no cap is sent when the default is 0')
+
+  const cappedLlm = makeScriptedLlm([{ text: 'nothing to save' }])
+  const capped = { generation: { ...config.generation, maxOutputTokens: 4096 } }
+  await runMemoryAgent(ctxWith(fs, cappedLlm), capped, route, 'sys', 'go', createMemoryToolkit(ctxWith(fs, cappedLlm), capped, [ROOT], signal), signal)
+  assert.equal(cappedLlm.calls[0].maxTokens, 4096, 'an explicit cap is sent as given')
 })
 
 await test('the loop stops at the round ceiling', async () => {

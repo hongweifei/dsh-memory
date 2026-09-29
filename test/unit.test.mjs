@@ -106,7 +106,10 @@ test('the nested blocks stay sparse so the SDK rules remain checkable', () => {
 test('resolveMemoryConfig fills the plugin defaults', () => {
   const resolved = resolveMemoryConfig(accepted({}))
   assert.equal(resolved.generation.enabled, true)
-  assert.equal(resolved.generation.maxOutputTokens, 2000)
+  // The generation output cap is this port's own knob (the original's memory options
+  // have no token field at all), and 0 means "no cap": the adapter's default applies,
+  // which is the only budget that fits a model writing file bodies through tools.
+  assert.equal(resolved.generation.maxOutputTokens, 0)
   assert.deepEqual(resolved.generation.turnComplete, {
     enabled: true,
     minPromptChars: 40,
