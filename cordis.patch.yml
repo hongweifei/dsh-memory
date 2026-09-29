@@ -1,0 +1,39 @@
+# Activation row for the dsh-memory bundle.
+#
+# When this package joins a profile's `dsh.profile.bundles`, this patch becomes
+# that profile's bundle layer and the row below mounts the plugin at startup.
+#
+# Tunables belong in the profile's own cordis.patch.yml as an `id: memory`
+# override, so they survive plugin upgrades. `!!js` values become real
+# functions (used for the gate and the result callbacks):
+#
+#   - id: memory
+#     name: '@dsh-external/dsh-memory'
+#     config:
+#       mode: native
+#       userScope: true
+#       projectScope: true
+#       trust:                  # Qoder's folder trust; OFF means every folder is trusted
+#         enabled: true
+#         folders: [D:/code/checkout]
+#       generation:
+#         prompt: '只记录部署步骤与故障特征。'
+#         roots:
+#           - { id: team, path: D:/knowledge/team, access: read }
+#         turnComplete:
+#           enabled: true
+#           minPromptChars: 40
+#           timeoutMs: 10000
+#           onGateError: skip
+#           shouldGenerate: !!js 'async (input) => ({ run: input.prompt.length >= 40 })'
+#         onResult: !!js '(r) => console.log("memory generation", r.status)'
+#       consumption:
+#         maxTokens: 2000
+#         overflow: truncate
+#         failureMode: best_effort
+#         onResult: !!js '(r) => console.log("memory consumption", r.status)'
+- insert:
+    - id: memory
+      name: '@dsh-external/dsh-memory'
+      config:
+        mode: native

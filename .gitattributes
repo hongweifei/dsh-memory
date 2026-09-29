@@ -1,0 +1,7 @@
+# The working tree is LF, and stays LF: this machine has `core.autocrlf=true` globally,
+# which would otherwise rewrite every file's line endings on checkout and produce a
+# whole-tree diff that has nothing to do with the change being made.
+* text=auto eol=lf
+
+# Screenshots are documentation and must not be line-ending mangled.
+*.png binary

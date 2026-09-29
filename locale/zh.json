@@ -1,0 +1,4 @@
+{
+  "title": "记忆（Qoder 风格）",
+  "description": "参照 Qoder Agent SDK 的持久记忆：每轮结束后由后台生成写入记忆文件，会话开始时按 token 预算加载进上下文。user/project 双作用域。"
+}

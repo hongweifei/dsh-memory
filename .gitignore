@@ -1,0 +1,24 @@
+# Installed dependencies.
+#
+# `@deepseek-ai/schemastery` is not on the configured registry: it is copied from the
+# installed harness at the same version (the recipe is in README.md). It is deliberately
+# NOT vendored here, so a fresh clone needs that one manual step before `npm test`.
+node_modules/
+
+# The live TODO list is a working document, not a published one: kept local on purpose.
+TODO.md
+
+# Generated artifacts.
+#
+# `preview.html` is written by `node test/preview.mjs` and removed again by
+# `node test/shots.mjs`; the screenshots under test/shots/ ARE documentation and are
+# committed. `_qoder-memory-strings.txt` is the bundle-string dump from
+# `node test/dump-qodercli-strings.mjs`.
+test/preview.html
+docs/_qoder-memory-strings.txt
+
+# OS / editor noise.
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.swp

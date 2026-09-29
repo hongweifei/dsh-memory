@@ -1,0 +1,4 @@
+{
+  "title": "Memory (Qoder-style)",
+  "description": "Persistent user/project memory modeled on the Qoder Agent SDK: a background pass records durable knowledge after each turn, and a budgeted pass loads it into context at session start."
+}

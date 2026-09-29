@@ -1,0 +1,48 @@
+{
+  "name": "@dsh-external/dsh-memory",
+  "version": "0.1.0",
+  "description": "Qoder-Agent-SDK-style persistent memory for DSH: a background generation pass writes knowledge into per-scope memory files after each turn, and a consumption pass loads them into Agent context on session start or explicit refresh. DSH 持久记忆插件：按 Qoder SDK 的做法分离「生成」与「消费」，user/project 双作用域，token 预算加载。",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "meta": {
+    "title": "Memory (Qoder-style)",
+    "description": "Persistent user/project memory modeled on the Qoder Agent SDK: a background pass records durable knowledge after each turn, and a budgeted pass loads it into context at session start."
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": ["@deepseek-ai/dsh-client-ui-settings"]
+    }
+  },
+  "files": [
+    "lib",
+    "locale",
+    "docs",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@deepseek-ai/schemastery": "3.18.4",
+    "picomatch": "^4.0.7"
+  },
+  "devDependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-test-renderer": "18.3.1"
+  }
+}
