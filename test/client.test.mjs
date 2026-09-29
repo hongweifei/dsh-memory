@@ -436,6 +436,7 @@ await test('every English key has a Chinese translation (no untranslated string)
     'commandFlush', // `/memory-flush`
     'commandDelete', // `/memory-delete`
     'commandTrust', // `/memory-trust`
+    'commandResume', // `/memory-resume`
   ])
   const untranslated = Object.keys(zh).filter(
     (key) => !IDENTIFIERS.has(key) && zh[key] === en[key] && /[a-zA-Z]{4,}/.test(en[key]),
@@ -608,6 +609,27 @@ await test('a failed generation explains itself instead of just saying "failed"'
   const skipped = { ...STATUS, lastGeneration: { status: 'skipped', turnIndex: 2, writtenFiles: [], failedFiles: [], reason: 'prompt shorter than 40 characters' } }
   const short = await renderWithStatus(skipped, 'en')
   assert.match(short.text, /prompt shorter than 40 characters/)
+})
+
+await test('the panel offers the resume command, and shows a paused generation', async () => {
+  // A pause is the answer to "why did memory stop?": the panel must name it and say how
+  // to clear it, or the only visible symptom is that no new result ever appears.
+  const paused = { ...STATUS, generationPause: { failures: 3, reason: 'provider exploded', since: 1, sessionId: 'session-1' } }
+  const { text } = await renderWithStatus(paused, 'en')
+  assert.match(text, /\/memory-resume/, 'the command is discoverable from the panel')
+  // The pause itself arrives as a recorded skip, so the reason is what carries it.
+  const skipped = {
+    ...STATUS,
+    lastGeneration: {
+      status: 'skipped',
+      turnIndex: 4,
+      writtenFiles: [],
+      failedFiles: [],
+      reason: 'paused after 3 consecutive failures: provider exploded',
+    },
+  }
+  const shown = await renderWithStatus(skipped, 'en')
+  assert.match(shown.text, /paused after 3 consecutive failures: provider exploded/)
 })
 
 await test('the editor select is styled as a select, and shows what it will load', async () => {

@@ -2392,6 +2392,108 @@ await test('a paced pass still sees every turn it skipped', async () => {
   }
 })
 
+await test('generation pauses after three consecutive failures and stops calling the model', async () => {
+  // Qoder's `hFl = 3`: a broken route must stop costing a model call every turn. This is
+  // the exact shape reported as "最近一次生成总是 failed" — the pass failed on turn 1 and
+  // kept failing identically, once per turn, forever.
+  const fs = makeFs({ [USER_MEMORY]: '# Index' })
+  const llm = makeLlm(() => {
+    throw new Error('provider exploded')
+  })
+  const { ctx, listeners, services } = makeCtx(fs, llm)
+  const results = []
+  apply(
+    ctx,
+    loadConfig({
+      mode: 'custom',
+      projectScope: false,
+      generation: {
+        pauseAfterFailures: 3,
+        turnComplete: { minPromptChars: 1 },
+        onResult: (result) => results.push(result),
+      },
+    }),
+  )
+  const session = makeSession([], 'C:\\proj')
+  const agent = makeAgent(session)
+  const log = makeLog(session)
+  for (let turn = 1; turn <= 4; turn += 1) {
+    log.turn(listeners, agent, turn, `turn ${turn} prompt with enough text`)
+    await services.get('memory').flushMemory()
+  }
+
+  assert.deepEqual(
+    results.map((result) => result.status),
+    ['failed', 'failed', 'failed', 'skipped'],
+    'three failures arm the pause; the fourth turn attempts nothing',
+  )
+  assert.match(results[0].reason, /provider exploded/, 'the cause is recorded')
+  assert.equal(llm.calls.length, 3, 'a paused session spends no model call')
+  assert.match(results[3].reason, /paused after 3 consecutive failures: provider exploded/)
+
+  // Both readers see it before a human intervenes.
+  const status = services.get('memory').status()
+  assert.equal(status.generationPause.failures, 3)
+  assert.equal(status.generationPause.sessionId, 'session-1')
+
+  // The original never resumes; this port adds one escape hatch, and it must work.
+  await services.get('memory').resumeGeneration()
+  assert.equal(services.get('memory').status().generationPause, null, 'the pause is cleared')
+  log.turn(listeners, agent, 5, 'turn five prompt with enough text')
+  await services.get('memory').flushMemory()
+  assert.equal(llm.calls.length, 4, 'resuming lets the next turn reach the model again')
+  assert.equal(results.at(-1).status, 'failed', 'the route is still broken, of course')
+})
+
+await test('a success clears the failure count before it can arm the pause', async () => {
+  // Two failures are not a pattern: one completed pass must forget them, or an
+  // occasional provider hiccup would pause a healthy session.
+  const fs = makeFs({ [USER_MEMORY]: '# Index' })
+  let fail = true
+  const llm = makeLlm(() => {
+    if (fail) throw new Error('transient')
+    return JSON.stringify({ writes: [], reason: 'nothing durable' })
+  })
+  const { ctx, listeners, services } = makeCtx(fs, llm)
+  const results = []
+  apply(
+    ctx,
+    loadConfig({
+      mode: 'custom',
+      projectScope: false,
+      generation: {
+        pauseAfterFailures: 3,
+        turnComplete: { minPromptChars: 1 },
+        onResult: (result) => results.push(result),
+      },
+    }),
+  )
+  const session = makeSession([], 'C:\\proj')
+  const agent = makeAgent(session)
+  const log = makeLog(session)
+  const runTurn = async (turn) => {
+    log.turn(listeners, agent, turn, `turn ${turn} prompt with enough text`)
+    await services.get('memory').flushMemory()
+  }
+
+  await runTurn(1)
+  await runTurn(2)
+  fail = false
+  await runTurn(3)
+  assert.equal(results.at(-1).status, 'no_change', 'the third pass completed')
+  fail = true
+  await runTurn(4)
+  await runTurn(5)
+  assert.equal(services.get('memory').status().generationPause, null, 'two more failures are not three in a row')
+
+  await runTurn(6)
+  assert.equal(results.at(-1).status, 'failed', 'the arming pass is the third failure itself')
+  assert.equal(services.get('memory').status().generationPause.failures, 3)
+  await runTurn(7)
+  assert.equal(results.at(-1).status, 'skipped', 'from the NEXT turn nothing is attempted')
+  assert.match(results.at(-1).reason, /paused after 3 consecutive failures/)
+})
+
 await test('an operator gate bypasses the turn interval', async () => {
   const plan = JSON.stringify({ writes: [], reason: 'nothing durable' })
   const fs = makeFs({ [USER_MEMORY]: '# Index' })

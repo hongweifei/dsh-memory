@@ -50,8 +50,14 @@
 - **删除记忆**：`deleteGuarded` 优先用 provider 自己的 `remove`，否则用 provider 给的
   `processPath` 去 `unlink`，`sandboxMode: 'read-only'` 的后端**直接拒绝**。
   四个入口：模型工具、`memory` 的 `action: delete`、`/memory-delete`、面板删除按钮。
+**治理**
+
 - **巩固（dream）**：`generation.dream`（默认关）+ `<DSH_HOME>/.consolidate-lock`，
   Qoder 的文件名与一小时窗口；死进程/过期的锁**会被删除并替换**。
+- **连续失败暂停**：`generation.pauseAfterFailures`（默认 **3**，即 Qoder 的 `hFl = 3`，0＝永不暂停）。
+  同一个坏配置会让每个回合各失败一次、各烧一次模型调用；现在连续三次 `failed` 后本会话的 pass
+  只记一条 `skipped`（原因 `paused after 3 consecutive failures: …`）且**不再调用模型**，
+  任何一次成功把计数清零。原实现没有恢复路径，本插件补 `/memory-resume` 作为唯一出口。
 - **环境变量覆写**：`DSH_MEMORY_HEADLESS|PROJECT|USER|DREAM`，同一套布尔词汇，环境优先。
 - **索引约束**：写入时检查"约 25KB"与"单行超过约 200 字符"，报告进结果、日志与面板——**不拒绝**。
 
@@ -173,7 +179,7 @@ false: 0 | false | no  | off              // 其他值一律当"未设置"
 
 ### 验证
 
-**309 项测试全绿**：unit 88 / integration 103 / model 40 / client 33 / architecture 13 /
+**316 项测试全绿**：unit 92 / integration 105 / model 40 / client 34 / architecture 13 /
 agent 18 / package-shape 10 / resolveMeta 4。跑法见 README §16；其中依赖"本机装了 harness"
 或"本机有会话存储"的少数检查会自行跳过，总数会因此少几条。
 
@@ -195,6 +201,9 @@ agent 18 / package-shape 10 / resolveMeta 4。跑法见 README §16；其中依�
 - 截断轮次 → 恢复"整轮丢弃"的旧写法，agent 测试红在 "a round cut short by the output cap
   still lands its tool calls"；把默认值改回 2000，unit 测试红在
   "resolveMemoryConfig fills the plugin defaults"。
+- 失败暂停 → 去掉 `pass` 里的暂停闸门，集成红在 "generation pauses after three consecutive
+  failures and stops calling the model"（模型调用数会变成 4 而不是 3）；让成功不清零计数，
+  集成红在 "a success clears the failure count before it can arm the pause"。
 - 按需加载 → `jitDecision` 恒加载，unit 红在触发决策、集成红在"a glob-triggered file must not load before a match"。
 - 回合内生成 → 去掉 `index.js` 里的调用点，集成红在"an open turn with new messages generates"。
 - 标签挤压 → 恢复旧 CSS，client 红在"the label must not be shrinkable below its text"。

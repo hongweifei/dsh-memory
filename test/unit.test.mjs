@@ -8,6 +8,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { deleteGuarded, readVersioned } from '../lib/fs.js'
+import { FAILURE_PAUSE_DEFAULT, advanceFailurePause, pausedOutcome, resumePaused } from '../lib/failure-pause.js'
 import { collectTouchedPaths, isJitActive, jitDecision, parseJitTrigger } from '../lib/jit.js'
 import { indexWarnings } from '../lib/memory-file.js'
 import {
@@ -1072,4 +1073,68 @@ test('deleteGuarded deletes through the provider when it can, and the OS when it
   }
 })
 
+test('a session pauses after three consecutive failures, and a success clears the count', () => {
+  // Qoder's own arithmetic: `consecutiveFailureCount >= hFl` with `hFl = 3`, reset to 0
+  // by every completed extraction.
+  const limit = FAILURE_PAUSE_DEFAULT
+  assert.equal(limit, 3, 'the threshold is Qoder\'s, not an invented one')
+
+  let state = { failures: 0, paused: false }
+  const step = (status, reason = 'boom') => {
+    const next = advanceFailurePause(state, { status, reason }, limit)
+    state = { failures: next.failures, paused: next.paused, pauseReason: next.reason }
+    return next
+  }
+  assert.equal(step('failed').paused, false, 'one failure is not a pattern')
+  assert.equal(step('failed').paused, false, 'two are not either')
+  const armed = step('failed')
+  assert.equal(armed.paused, true, 'the third arms the pause')
+  assert.equal(armed.failures, 3)
+  assert.equal(armed.pausedNow, true, 'the arming pass is the one that warns')
+  assert.equal(advanceFailurePause({ failures: 3, paused: true }, { status: 'skipped' }, limit).paused, false,
+    'any pass that did not fail clears it')
+  // While paused the count stays put, so the reason keeps naming the real number.
+  assert.equal(step('failed').pausedNow, false, 'an already-paused session does not re-warn')
+  assert.equal(state.failures, 4)
+})
+
+test('a non-failing pass resets the count, and 0 disables the pause', () => {
+  assert.deepEqual(advanceFailurePause({ failures: 2, paused: false }, { status: 'saved' }, 3), {
+    failures: 0,
+    paused: false,
+    reason: '',
+    pausedNow: false,
+  })
+  // `no_change` and `partial` are work that happened, not failures.
+  assert.equal(advanceFailurePause({ failures: 2 }, { status: 'no_change' }, 3).failures, 0)
+  assert.equal(advanceFailurePause({ failures: 2 }, { status: 'partial' }, 3).failures, 0)
+  // The opt-out keeps retrying, which is what this plugin did before the pause existed.
+  const kept = advanceFailurePause({ failures: 9 }, { status: 'failed', reason: 'boom' }, 0)
+  assert.deepEqual(kept, { failures: 10, paused: false, reason: '', pausedNow: false })
+})
+
+test('a paused session reports a skip that names the pause, not a failure', () => {
+  const outcome = pausedOutcome({ failures: 3, pauseReason: 'generation reached maxOutputTokens' }, 7, 4)
+  assert.equal(outcome.status, 'skipped', 'nothing was attempted, so it is not a failure')
+  assert.equal(outcome.turnIndex, 4)
+  assert.match(outcome.reason, /paused after 3 consecutive failures/)
+  assert.match(outcome.reason, /generation reached maxOutputTokens/, 'and it carries the cause')
+  assert.deepEqual(outcome.writtenFiles, [])
+})
+
+test('resuming clears every armed session and the mirrored state', () => {
+  const first = { paused: true, failures: 3, pauseReason: 'boom' }
+  const second = { paused: true, failures: 5, pauseReason: 'bang' }
+  const armed = new Set([first, second])
+  const state = { generationPause: { failures: 3 } }
+  assert.equal(resumePaused(armed, state), 2)
+  assert.deepEqual([first, second], [
+    { paused: false, failures: 0, pauseReason: '' },
+    { paused: false, failures: 0, pauseReason: '' },
+  ])
+  assert.equal(armed.size, 0)
+  assert.equal(state.generationPause, undefined, 'the panel stops showing the pause')
+})
+
 console.log(`\n${passed} tests passed`)
+

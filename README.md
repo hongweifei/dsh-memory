@@ -7,7 +7,7 @@
 | 版本 | `0.1.0` |
 | 包名 | `@dsh-external/dsh-memory` |
 | 依据 | 真实 SDK（`@qoder-ai/qoder-agent-sdk@1.0.50`）**＋**安装的 `qodercli` bundle 解码，不是文档推测 |
-| 测试 | **309 项全绿**（`node test/*.test.mjs`）：unit 88 / integration 103 / model 40 / client 33 / architecture 13 / agent 18 / package-shape 10 / resolveMeta 4 |
+| 测试 | **316 项全绿**（`node test/*.test.mjs`）：unit 92 / integration 105 / model 40 / client 34 / architecture 13 / agent 18 / package-shape 10 / resolveMeta 4 |
 | 依赖 | 仅 `@deepseek-ai/schemastery`（提供真正的 `Config` schema）与 `picomatch`（排除规则；Qoder 自己也是这个库） |
 | 设计文档 | [`docs/qoder-memory-model.md`](docs/qoder-memory-model.md)（解出的记忆模型）、[`docs/memory-layers.md`](docs/memory-layers.md)（哪些层归 harness、哪些归本插件） |
 
@@ -90,6 +90,7 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
       folders: []             # 显式信任的目录（绝对路径，或相对会话 cwd）
     generation:
       maxOutputTokens: 0      # 0＝不给回复设上限，用适配器/模型自己的默认值（见下方说明）
+      pauseAfterFailures: 3   # 连续失败几次就暂停本会话的生成（Qoder 的 hFl=3）；0＝永不暂停
       maxWrites: 4            # 单轮最多写几个文件
       maxWriteBytes: 16384    # 单文件字节上限
       provider: ''            # 留空则用会话自身模型路由
@@ -173,6 +174,7 @@ Qoder 的 `memory` / `memory_get` 在本插件叫 `memory_list` / `memory_read`�
 | `/memory-imports [status\|allow\|deny]` | **会话级**外部导入授权（授权后立即重新加载） |
 | `/memory-delete <scope>:<path>` | 删除一个记忆文件 |
 | `/memory-refresh` | 重新加载记忆（外部编辑后手工拉取） |
+| `/memory-resume` | 清除「连续失败暂停」（Qoder 没有恢复路径，这是本插件补的唯一出口） |
 | `/memory-flush` | 等后台写入落盘 |
 
 ### 设置面板
@@ -286,7 +288,7 @@ paths: ["src/**/*.ts"]
 匹配用 `picomatch`（与排除规则同库同选项），"触及"取自 `session.deriveMessages()` 且**只认像路径的 token**
 （散文不会误触发）。被跳过的文件报 `jit_skipped`，面板会说明原因。
 
-## 12. 生成：串行、间隔、回合内、游标
+## 12. 生成：串行、间隔、回合内、游标、失败暂停
 
 - **串行**：一个会话同时只有一个 pass；pass 期间完成的回合**合并成一次**跟进
   （不是并发跑，也不是每轮各跑一次）。这是修过的真实缺陷：并发 pass 会互相覆盖索引。
@@ -296,6 +298,13 @@ paths: ["src/**/*.ts"]
   没有新消息的步骤什么都不做，所以它是廉价的。
 - **转录游标**：`collectTranscript(session, sinceSeq)` 只取上次之后的消息，**只有 pass 真跑了才推进**；
   游标找不到就退回全量（丢历史比重复送更糟）。间隔 > 1 时它保证被跳过的几轮不丢。
+- **连续失败暂停**（Qoder 的 `hFl = 3`）：原实现按 sink 累计连续失败，到阈值 `paused = true`，
+  之后 `onTurnComplete` 只记一行 `"skipped because service is paused"` 就返回、**不再发起模型调用**；
+  任何一次成功的提取把计数归零。本插件照此实现：只把 `failed` 算作失败（`skipped`/`no_change`/`partial`
+  都算成功并清零），到 `generation.pauseAfterFailures`（默认 3；0＝永不暂停）后本会话的 pass
+  直接记一条 `skipped`，原因写明暂停及其成因（`paused after 3 consecutive failures: …`），
+  面板与 `/memory` 都显示。**唯一补充**：原实现没有恢复路径（`paused` 一置就持续到进程结束），
+  而 DSH 会话活得更久，所以补了 `/memory-resume` 这一个显式出口。
 
 ## 13. 删除记忆
 
@@ -362,7 +371,7 @@ node test/harness-env.mjs         # 不是测试：定位 harness 与安装位�
 **环境相关的东西一律自动发现，不写死路径。** harness 会把 `DSH_HOME` / `DSH_PROFILE_DIR`
 导进每个会话，`test/harness-env.mjs` 用它定位已安装的 harness 与本插件；找不到时，
 那几条**依赖安装或会话存储**的检查会自己报 `--  (skipped: …)` 而不是失败（也不假装通过），
-所以纯克隆的仓库仍能跑其余全部检查，只是总数比上面的 309 少几条。
+所以纯克隆的仓库仍能跑其余全部检查，只是总数比上面的 316 少几条。
 
 方法上的三条硬规矩：
 

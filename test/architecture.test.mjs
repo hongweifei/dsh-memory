@@ -43,7 +43,7 @@ for (const [name, source] of sources) {
 const LAYERS = [
   ['constants.js'],
   ['config.js', 'tokens.js', 'fs.js', 'paths.js', 'memory-file.js'],
-  ['render.js', 'memory-pass.js', 'memory-prompt.js', 'memory-search.js', 'imports.js', 'excludes.js', 'trust.js', 'jit.js', 'transcript.js'],
+  ['render.js', 'memory-pass.js', 'memory-prompt.js', 'memory-search.js', 'imports.js', 'excludes.js', 'trust.js', 'jit.js', 'transcript.js', 'failure-pause.js'],
   ['memory-agent.js'],
   ['consumption.js', 'generation.js', 'dream.js'],
   ['service.js', 'tools.js', 'routes.js', 'commands.js'],
