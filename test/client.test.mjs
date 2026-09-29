@@ -583,6 +583,33 @@ await test('a read-write scope offers delete per file, and a read-only one does 
   assert.ok(!readOnly.text.includes('Delete'), 'a read-only scope must not offer a delete it would refuse')
 })
 
+await test('a failed generation explains itself instead of just saying "failed"', async () => {
+  // The status vocabulary is cryptic on its own: `failed` means the pass asked for
+  // writes and landed none, or the pass threw. Both carry the reason, and a refused
+  // write carries the only explanation of WHY it was refused — so neither may be
+  // swallowed by the panel. (The dream row already showed its reason; generation did
+  // not, which is exactly how "always failed" stayed unexplained.)
+  const failed = {
+    ...STATUS,
+    lastGeneration: {
+      status: 'failed',
+      turnIndex: 3,
+      writtenFiles: [],
+      failedFiles: [{ rootId: 'user', path: 'MEMORY.md', error: 'content exceeds maxWriteBytes 16384' }],
+      reason: 'every write was refused',
+    },
+  }
+  const { text } = await renderWithStatus(failed, 'en')
+  assert.match(text, /failed/, 'the status itself still shows')
+  assert.match(text, /every write was refused/, 'the reason must reach the activity row')
+  assert.match(text, /Refused to write MEMORY\.md/, 'the refused write must be listed')
+  assert.match(text, /content exceeds maxWriteBytes 16384/, 'and the refusal must say why')
+  // A skip explains itself too: that is the other status a bare word cannot convey.
+  const skipped = { ...STATUS, lastGeneration: { status: 'skipped', turnIndex: 2, writtenFiles: [], failedFiles: [], reason: 'prompt shorter than 40 characters' } }
+  const short = await renderWithStatus(skipped, 'en')
+  assert.match(short.text, /prompt shorter than 40 characters/)
+})
+
 await test('the editor select is styled as a select, and shows what it will load', async () => {
   // It was styled with the button class: 28px against the input's 34px, a
   // transparent background (so the OS picked the text colour), and no room for the

@@ -7,7 +7,7 @@
 | 版本 | `0.1.0` |
 | 包名 | `@dsh-external/dsh-memory` |
 | 依据 | 真实 SDK（`@qoder-ai/qoder-agent-sdk@1.0.50`）**＋**安装的 `qodercli` bundle 解码，不是文档推测 |
-| 测试 | **304 项全绿**（`node test/*.test.mjs`）：unit 88 / integration 103 / model 40 / client 32 / architecture 13 / agent 14 / package-shape 10 / resolveMeta 4 |
+| 测试 | **306 项全绿**（`node test/*.test.mjs`）：unit 88 / integration 103 / model 40 / client 33 / architecture 13 / agent 15 / package-shape 10 / resolveMeta 4 |
 | 依赖 | 仅 `@deepseek-ai/schemastery`（提供真正的 `Config` schema）与 `picomatch`（排除规则；Qoder 自己也是这个库） |
 | 设计文档 | [`docs/qoder-memory-model.md`](docs/qoder-memory-model.md)（解出的记忆模型）、[`docs/memory-layers.md`](docs/memory-layers.md)（哪些层归 harness、哪些归本插件） |
 
@@ -353,7 +353,7 @@ node test/harness-env.mjs         # 不是测试：定位 harness 与安装位�
 **环境相关的东西一律自动发现，不写死路径。** harness 会把 `DSH_HOME` / `DSH_PROFILE_DIR`
 导进每个会话，`test/harness-env.mjs` 用它定位已安装的 harness 与本插件；找不到时，
 那几条**依赖安装或会话存储**的检查会自己报 `--  (skipped: …)` 而不是失败（也不假装通过），
-所以纯克隆的仓库仍能跑其余全部检查，只是总数比上面的 304 少几条。
+所以纯克隆的仓库仍能跑其余全部检查，只是总数比上面的 306 少几条。
 
 方法上的三条硬规矩：
 

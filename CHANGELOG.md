@@ -129,6 +129,13 @@ false: 0 | false | no  | off              // 其他值一律当"未设置"
 
 每条都留了测试；括号里是当初的错法。
 
+- **面板只说 `failed`，不说为什么**，而且**宿主侧根本没给原因**：工具驱动的 pass 走
+  `toolkit.result('')`，无论成败都带一个空 reason，被拒写入又只存在于 `failedFiles` 里。
+  于是一个 "最近一次生成总是 failed" 的现象无法追查。现在两侧都补齐：
+  `summarizeWrites` 在没有声明原因时用**第一条拒绝**当原因
+  （`every attempt was refused: content exceeds maxWriteBytes 16384`），面板的生成行渲染
+  `failed (turn 3) — …`，每个被拒写入各占一条告警，`skipped` 也照样说明
+  （`prompt shorter than 40 characters`）。
 - **并发生成互相覆盖索引**（每个 `turn/end` 各起一次 pass）→ 每会话串行 + 合并跟进。
 - **间隔 > 1 时丢历史**（只送触发那次 pass 的那一轮）→ 转录游标。
 - **面板标签被挤成一列**（`flex:1;min-width:0` 让中文标签逐字断行）→ `min-width:max-content` + `keep-all`。
@@ -158,8 +165,8 @@ false: 0 | false | no  | off              // 其他值一律当"未设置"
 
 ### 验证
 
-**304 项测试全绿**：unit 88 / integration 103 / model 40 / client 32 / architecture 13 /
-agent 14 / package-shape 10 / resolveMeta 4。跑法见 README §16；其中依赖"本机装了 harness"
+**306 项测试全绿**：unit 88 / integration 103 / model 40 / client 33 / architecture 13 /
+agent 15 / package-shape 10 / resolveMeta 4。跑法见 README §16；其中依赖"本机装了 harness"
 或"本机有会话存储"的少数检查会自行跳过，总数会因此少几条。
 
 每一项修复都**验证过"回退会红"**（去掉修复，指出失败的测试）：
@@ -174,6 +181,9 @@ agent 14 / package-shape 10 / resolveMeta 4。跑法见 README §16；其中依�
 - 读盘快进 → 禁用缓存命中，unit 红在"an unchanged version must not be re-read"。
 - 转录游标 → 换回 `collectTurn(session, turn)`，集成红在"first turn prompt must reach the model"。
 - 索引告警 → `applyOneWrite` 不算告警，集成红在超限索引那条；把解出的原句改写，模型测试红。
+- 失败原因 → 去掉 `summarizeWrites` 的回退，agent 测试红在 "a refused write with no stated
+  reason still explains the failure"；把面板的 `last.reason` 拿掉，client 测试红在
+  "the reason must reach the activity row"。
 - 按需加载 → `jitDecision` 恒加载，unit 红在触发决策、集成红在"a glob-triggered file must not load before a match"。
 - 回合内生成 → 去掉 `index.js` 里的调用点，集成红在"an open turn with new messages generates"。
 - 标签挤压 → 恢复旧 CSS，client 红在"the label must not be shrinkable below its text"。

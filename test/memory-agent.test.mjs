@@ -208,6 +208,27 @@ await test('a text-only answer ends the loop and still allows the JSON fallback'
   assert.match(text, /"writes"/, 'the caller can fall back to parsing this')
 })
 
+await test('a refused write with no stated reason still explains the failure', async () => {
+  // This is the shape a reader actually hits: the pass says `failed` and there is no
+  // reason anywhere, because a tool-driven pass never states one. The refusal is the
+  // only explanation that exists, so it becomes the reason.
+  const fs = makeFs({})
+  const llm = makeScriptedLlm([
+    {
+      calls: [
+        { id: 'c', name: 'memory_write', arguments: JSON.stringify({ rootId: 'user', path: '../escape.md', content: 'x' }) },
+      ],
+    },
+  ])
+  const toolkit = createMemoryToolkit(ctxWith(fs, llm), config, [ROOT], signal)
+  const { outcome } = await runMemoryAgent(ctxWith(fs, llm), config, route, 'sys', 'go', toolkit, signal)
+  assert.equal(outcome.status, 'failed', 'one attempt, nothing landed')
+  assert.equal(outcome.writtenFiles.length, 0)
+  assert.deepEqual(outcome.failedFiles.map((file) => file.path), ['../escape.md'])
+  assert.match(outcome.reason, /every attempt was refused/)
+  assert.match(outcome.reason, /relative \.md path/, 'the reason carries the refusal itself')
+})
+
 await test('the loop stops at the round ceiling', async () => {
   const fs = makeFs({})
   // A model that lists forever must not run forever.
