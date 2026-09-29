@@ -66,7 +66,12 @@
 - 设置面板（中英双语，真实 `--dsw-*` 主题 token）：状态、**作用域区（`user` 加每个有记忆的项目）**、
   每文件打开/删除、信任授权按钮、活动与告警（大文件/失败/被排除/被拦导入/**jit 跳过**/**索引告警**）、
   编辑器（作用域下拉 + 文件名 + 保存/重载/等待）。
-- `/memory`、`/memory-trust`、`/memory-imports`、`/memory-delete`、`/memory-refresh`、`/memory-flush`。
+- **预算区把两半都摊开**：标题写明是**注入**预算（消费半），三个原值 `maxTokens` / `overflow` /
+  `failureMode` 的标签直接带枚举含义（`truncate | fail_query`、`best_effort | fail_query`），
+  并补上生成侧的两个旋钮（输出上限 `0 = 模型默认`、连续失败暂停阈值 `0 = 永不`）。
+  原先只显示一半的 token 故事，正是"输出预算被烧光却没人发现"的土壤。
+- `/memory`、`/memory-trust`、`/memory-imports`、`/memory-delete`、`/memory-refresh`、
+  `/memory-flush`、`/memory-resume`。
 
 ### 解码得到的关键证据
 

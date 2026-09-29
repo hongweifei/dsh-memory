@@ -27,6 +27,8 @@ const STATUS = {
   maxTokens: 2000,
   overflow: 'truncate',
   failureMode: 'best_effort',
+  maxOutputTokens: 0,
+  pauseAfterFailures: 3,
   gate: { kind: 'custom', timeoutMs: 10000, onGateError: 'skip' },
   trust: { enabled: true, trusted: true, folder: 'C:\\proj', declared: ['C:\\proj'], remembered: [], folders: ['C:\\proj'] },
   memoryChange: {

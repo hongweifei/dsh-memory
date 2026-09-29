@@ -185,6 +185,8 @@ const STATUS = {
   maxTokens: 2000,
   overflow: 'truncate',
   failureMode: 'best_effort',
+  maxOutputTokens: 0,
+  pauseAfterFailures: 3,
   gate: { kind: 'minPromptChars', minPromptChars: 40 },
   trust: { enabled: true, trusted: true, folder: 'C:\\proj', declared: [], remembered: [], folders: [] },
   memoryChange: { fileCount: 2 },
@@ -277,10 +279,15 @@ await test('the panel renders the full status, scopes, budget, and activity', as
   assert.match(text, /NOTES\.md/)
   assert.match(text, /<span>read-only\n/, 'the read-only scope access must render localized')
   assert.match(text, /No memory files yet\./)
-  // Budget.
-  assert.match(text, /maxTokens\n<span>2000\n/)
-  assert.match(text, /overflow\n<span>truncate\n/)
-  assert.match(text, /failureMode\n<span>best_effort\n/)
+  // Budget: the labels say WHAT is capped and WHICH enum values exist, because the raw
+  // identifiers (`truncate`, `best_effort`) explain nothing on their own.
+  assert.match(text, /Injection cap \(0 = inject nothing\)\n<span>2000\n/)
+  assert.match(text, /If it does not fit \(truncate \| fail_query\)\n<span>truncate\n/)
+  assert.match(text, /If a file fails to load \(best_effort \| fail_query\)\n<span>best_effort\n/)
+  // The generation side belongs in the same section: one budget without the other is how
+  // a spent output budget went unnoticed.
+  assert.match(text, /Generation output cap \(0 = model default\)\n<span>0\n/)
+  assert.match(text, /Pause after N consecutive failures \(0 = never\)\n<span>3\n/)
   // Latest activity, including per-file consumption status.
   assert.match(text, /saved \(turn 3\)/)
   assert.match(text, /user:MEMORY\.md \(loaded\)/)
@@ -698,7 +705,7 @@ await test('the panel renders Chinese when zh is active', async () => {
   assert.match(text, /记忆/)
   assert.match(text, /状态/)
   assert.match(text, /作用域/)
-  assert.match(text, /Token 预算/)
+  assert.match(text, /注入预算（消费半）/)
   assert.match(text, /最近活动/)
   assert.match(text, /编辑记忆文件/)
   assert.match(text, /已启用/)
@@ -712,7 +719,7 @@ await test('the panel renders English when en is active', async () => {
   assert.match(text, /Memory/)
   assert.match(text, /Status/)
   assert.match(text, /Scopes/)
-  assert.match(text, /Token budget/)
+  assert.match(text, /Injection budget \(consumption\)/)
   assert.match(text, /Latest activity/)
   assert.match(text, /Edit memory file/)
 })

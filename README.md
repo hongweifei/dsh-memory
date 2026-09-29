@@ -113,15 +113,21 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
       # onResult: !!js '(r) => console.log("memory", r.status)'
     consumption:
       enabled: true
-      maxTokens: 2000
-      overflow: truncate       # truncate | fail_query
-      failureMode: best_effort # best_effort | fail_query
+      maxTokens: 2000          # 记忆注入上限（token）；0＝一个字都不注入
+      overflow: truncate       # truncate（截断到放得下）| fail_query（放不下就报错）
+      failureMode: best_effort # best_effort（单个文件读失败也继续）| fail_query（报错）
       # files:                 # custom 模式下替代自动发现
       #   - { id: conventions, path: D:/knowledge/CONVENTIONS.md, required: true }
       # onResult: !!js '(r) => console.log("memory", r.status)'
 ```
 
 `shouldGenerate` 与 `onResult` 用 YAML 的 `!!js` 表达式传入（Loader 会求值成真正的函数）。
+
+**两个"预算"不要混**：`consumption.maxTokens` 是**注入**预算——每一步最多允许多少 token 的
+**记忆文本**进入上下文（0＝不注入）。它由 `render.js` 执行"宽处略、细处截"：整份放得下就全注入；
+放不下就**先整文件丢弃**（按加载顺序），只剩一个时才对它做截断（最多 12 次尝试），
+截断的是索引时还会加一条提示。**模型自己的输出**上限是另一个旋钮（`generation.maxOutputTokens`），
+两者互不相干；面板的「注入预算」区把两半并排显示，就是为了不再把这两件事搞混。
 
 **`native` 与 `custom` 的差别**照 SDK 的规则：`native` 下运行时决定记什么、存哪里、何时加载，
 且**拒绝** `generation.*` / `consumption.*` 的覆盖；`custom` 只覆盖你显式给出的部分。
