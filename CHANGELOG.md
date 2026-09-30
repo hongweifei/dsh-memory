@@ -78,7 +78,18 @@
   整行禁止换行：长项目名省略号截断，不会把按钮挤到第二行；列表与上方说明之间留 8px 间距。
   行显示**占用大小**而不是"更新于"——harness 的 `FsInfo` 只有 `version/type/size`，
   没有修改时间，编不出来。
-- **「打开目录」做过、又撤掉了**（如实记录）：harness 没有"在文件管理器里打开"的能力，实现是让
+- **记忆写入不再被会话沙箱挡住**（用户报告的 `file access denied under workspace-write mode`）。
+  记忆按契约放在 `$DSH_HOME`，**永远在会话工作区之外**；harness 的沙箱后端按策略给"变更"上围栏
+  （`workspace-write` 只放行落在工作区内的目标），而 `writeText` 的**第 5 个参数正是"本次调用的
+  mode + workspaceRoot"**，省略就套用会话策略——所以每次记忆写入天生被拒，而**读不受限**（记忆
+  一直能加载，只有写会失败）。现在新增 `writePolicy`：
+  - `memory-root`（**默认**）：记忆与插件自有存储（信任库、巩固锁与状态）在写入时声明自己的目录
+    作为沙箱根，写仍被插件自己的路径校验限在作用域内，任何会话策略下记忆都可写；
+  - `session`：完全跟随会话策略，受限模式下记忆变**只读**；此时**删除也不再走 `node:fs`
+    绕过围栏**，而是直接拒绝（`deleteGuarded` 的 `allowOutsideFence`），因为 provider 的 `remove`
+    本身受围栏约束、`processPath` 的 unlink 不受。
+  面板状态区新增一行「记忆写入（memory-root＝自声明沙箱根 | session＝跟随会话策略）· <会话模式>」，
+  `/memory` 也打一行并在只读时明说原因。
   `subprocess` 服务 spawn `explorer.exe`（失败退 `cmd /c start`）。本机点了打不开，而这条链路在
   测试里只能验 argv/stdio 形状、验不了"窗口真的出现了"，于是按用户要求撤掉：面板不再有该按钮，
   `POST /api/memory/reveal` 与 `lib/reveal.js` 一并删除。留给将来的一条证据：**这条路在当前
@@ -210,7 +221,7 @@ false: 0 | false | no  | off              // 其他值一律当"未设置"
 
 ### 验证
 
-**320 项测试全绿**：unit 92 / integration 106 / model 40 / client 36 / architecture 14 /
+**325 项测试全绿**：unit 94 / integration 108 / model 40 / client 37 / architecture 14 /
 agent 18 / package-shape 10 / resolveMeta 4。跑法见 README §16；其中依赖"本机装了 harness"
 或"本机有会话存储"的少数检查会自行跳过，总数会因此少几条。
 

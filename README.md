@@ -7,7 +7,7 @@
 | 版本 | `0.1.0` |
 | 包名 | `@dsh-external/dsh-memory` |
 | 依据 | 真实 SDK（`@qoder-ai/qoder-agent-sdk@1.0.50`）**＋**安装的 `qodercli` bundle 解码，不是文档推测 |
-| 测试 | **320 项全绿**（`node test/*.test.mjs`）：unit 92 / integration 106 / model 40 / client 36 / architecture 14 / agent 18 / package-shape 10 / resolveMeta 4 |
+| 测试 | **325 项全绿**（`node test/*.test.mjs`）：unit 94 / integration 108 / model 40 / client 37 / architecture 14 / agent 18 / package-shape 10 / resolveMeta 4 |
 | 依赖 | 仅 `@deepseek-ai/schemastery`（提供真正的 `Config` schema）与 `picomatch`（排除规则；Qoder 自己也是这个库） |
 | 设计文档 | [`docs/qoder-memory-model.md`](docs/qoder-memory-model.md)（解出的记忆模型）、[`docs/memory-layers.md`](docs/memory-layers.md)（哪些层归 harness、哪些归本插件） |
 
@@ -76,6 +76,7 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
     mode: native              # native | custom
     userScope: true           # $DSH_HOME/memory/
     projectScope: true        # $DSH_HOME/projects/<projectKey>/memory/  （不在仓库里）
+    writePolicy: memory-root  # 记忆写入声明的沙箱根；memory-root＝自声明记忆目录，session＝交给会话策略
     projectRootMarkers: []    # 空＝会话 cwd 就是项目（harness 的分组方式）；['.git']＝整个仓库一份记忆
     excludes: []              # gitignore 风格 glob（picomatch），只对项目作用域生效
     #   - '**/*.draft.md'
@@ -131,6 +132,20 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
 
 **`native` 与 `custom` 的差别**照 SDK 的规则：`native` 下运行时决定记什么、存哪里、何时加载，
 且**拒绝** `generation.*` / `consumption.*` 的覆盖；`custom` 只覆盖你显式给出的部分。
+
+**与 harness 文件沙箱的关系（`writePolicy`）**：记忆按契约放在 `$DSH_HOME` 下，也就是**永远在会话
+工作区之外**。harness 的沙箱后端（`dsh-fs-sandbox` + `dsh-sandbox-policy`）按**策略**给"变更"上围栏：
+
+- `read-only` 拒绝一切写入；`workspace-write` 只允许**规范化后落在工作区内**（或平台临时目录）的目标；
+  `danger-full-access` 不设围栏。
+- **读不受限**（"the mutation fence does not restrict observation"）——所以记忆**一直能加载**，
+  只有写入会失败，报的就是 `file access denied under workspace-write mode`。
+- `writeText`/`editText` 的第 5 个参数就是"本次调用的 mode + workspaceRoot"，省略则套用会话策略。
+
+因此本插件默认 `writePolicy: memory-root`：**记忆与它自己的存储（信任库、巩固锁与状态）在写入时
+声明自己的目录作为沙箱根**，写仍被插件自己的路径校验限在作用域内，但在 `workspace-write` 会话下
+照常可用。设成 `session` 则完全跟随会话策略：受限模式下记忆变成**只读**，面板与 `/memory` 会明说
+（`session` 时删除也不再走 `node:fs` 绕过围栏，而是直接拒绝）。
 
 **关于 `maxOutputTokens`**：SDK 的 `SerializableMemoryGenerationOptions` 里**没有这个字段**
 （只有 `enabled` / `roots` / `prompt` / `turnComplete`），所以它是本插件自己的旋钮，

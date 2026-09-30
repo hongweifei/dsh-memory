@@ -561,6 +561,23 @@ await test('the panel explains a jit-skipped file and an index warning', async (
   assert.doesNotMatch(clean.text, /Index MEMORY\.md/)
 })
 
+await test('the panel says which sandbox policy memory writes declare', async () => {
+  // Memory sits outside every workspace, so under `writePolicy: session` a workspace-write
+  // session makes memory read-only; the panel has to be able to say that up front.
+  const writing = await renderWithStatus({ ...STATUS, writePolicy: 'memory-root', sandboxMode: 'workspace-write' }, 'en')
+  assert.match(writing.text, /Memory writes \(memory-root/, 'the row names the choice')
+  assert.match(writing.text, /memory-root · workspace-write/, 'and the session mode beside it')
+
+  const following = await renderWithStatus({ ...STATUS, writePolicy: 'session', sandboxMode: 'workspace-write' }, 'zh')
+  assert.match(following.text, /记忆写入（memory-root/)
+  assert.match(following.text, /session · workspace-write/)
+
+  // A deployment with no fence at all shows the policy alone, with no dangling separator.
+  const bare = await renderWithStatus({ ...STATUS, writePolicy: 'memory-root' }, 'en')
+  assert.match(bare.text, /memory-root\n/)
+  assert.doesNotMatch(bare.text, /memory-root ·/)
+})
+
 await test('a read-write scope offers delete per file, and a read-only one does not', async () => {
   const calls = []
   const { text, renderer } = await renderWithStatus(STATUS, 'en', { keep: true, calls })

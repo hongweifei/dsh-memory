@@ -37,12 +37,15 @@ function makeFs(initial = {}, options = {}) {
     for (let index = 1; index < parts.length; index += 1) dirs.add(parts.slice(0, index).join('\\'))
   }
   let version = 0
+  /** Every writeText's target key and declared sandbox policy. */
+  const writes = []
   const normalize = (path) => String(path).replace(/\//g, '\\').replace(/\\+$/, '')
   /** Every readText, so a test can prove the version cache skipped one. */
   const reads = []
   return {
     files,
     reads,
+    writes,
     /**
      * Simulate an editor writing a file: content AND provider version change.
      * `files.set` alone would leave the version stale, which is the one thing a
@@ -110,8 +113,11 @@ function makeFs(initial = {}, options = {}) {
         target: { targetKey: `${key}\\${name}`, displayPath: name },
       }))
     },
-    async writeText(target, content, expected) {
+    async writeText(target, content, expected, _signal, sandboxPolicy) {
       const key = normalize(target.targetKey)
+      // Every per-call policy the plugin declares, so a test can prove the sandbox argument
+      // reaches the provider instead of the write being fenced out of the workspace.
+      writes.push({ key, sandboxPolicy })
       if (expected?.kind === 'createIfAbsent' && files.has(key)) {
         const error = new Error('exists')
         error.code = 'FS_NOT_OBSERVED'
@@ -1759,6 +1765,77 @@ await test('a scope is labelled with its workspace name, not its directory slug'
   bare.services.set('agents', { currentInitiator: () => makeAgent(makeSession([], 'D:\\code\\demo')) })
   const plain = await callRoute(bare.routes, '/api/memory/status', {})
   assert.deepEqual(plain.json.roots.map((root) => root.label), [undefined, undefined, undefined])
+})
+
+await test('memory writes declare the memory root as their sandbox workspace', async () => {
+  // Memory lives under `$DSH_HOME`, outside every session workspace, so under
+  // `workspace-write` an omitted per-call policy denies every write ("file access denied
+  // under workspace-write mode"). The plugin declares the root it is writing to instead.
+  const fs = makeFs({ [USER_MEMORY]: '# Index' })
+  const { ctx, routes } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, trustConfig())
+  const written = await callRoute(routes, '/api/memory/file', {
+    method: 'POST',
+    body: { scope: 'user', path: 'notes.md', content: 'body' },
+  })
+  assert.equal(written.status, 200)
+  const call = fs.writes.at(-1)
+  assert.equal(call.key, `${HOME}\\memory\\notes.md`)
+  assert.deepEqual(call.sandboxPolicy, { mode: 'workspace-write', workspaceRoot: `${HOME}\\memory` })
+
+  // `writePolicy: 'session'` hands the decision back: the provider is given no policy at
+  // all, so the session's own sandbox decides (and memory becomes read-only when it fences).
+  const sessionFs = makeFs({ [USER_MEMORY]: '# Index' })
+  const session = makeCtx(sessionFs, makeLlm('{}'))
+  apply(
+    session.ctx,
+    loadConfig({ mode: 'custom', writePolicy: 'session', generation: { turnComplete: { enabled: false } } }),
+  )
+  const second = await callRoute(session.routes, '/api/memory/file', {
+    method: 'POST',
+    body: { scope: 'user', path: 'notes.md', content: 'body' },
+  })
+  assert.equal(second.status, 200)
+  assert.equal(sessionFs.writes.at(-1).sandboxPolicy, undefined, 'no policy is declared')
+})
+
+await test('a session-following policy stops the delete that would bypass the fence', async () => {
+  // The provider's own removal is fenced; an unlink through `processPath` is not. Following
+  // the session means refusing that bypass rather than reaching around a fence it asked for.
+  const fs = makeFs({ [`${HOME}\\memory\\notes.md`]: 'note' })
+  fs.sandboxMode = 'workspace-write'
+  // The bypass only exists for a provider that cannot delete itself.
+  delete fs.remove
+  const { ctx, routes } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, loadConfig({ mode: 'custom', writePolicy: 'session', generation: { turnComplete: { enabled: false } } }))
+  const refused = await callRoute(routes, '/api/memory/file', {
+    method: 'DELETE',
+    query: '?scope=user&path=notes.md',
+  })
+  assert.equal(refused.status, 500)
+  assert.match(refused.json.error, /sandbox policy \(workspace-write\) does not allow deleting/)
+  assert.ok(fs.files.has(`${HOME}\\memory\\notes.md`), 'the file survives the refusal')
+
+  // The default (`memory-root`) treats the memory root as the plugin's own storage, so the
+  // fence check is passed and the unlink path is reached. `processPath` is stubbed to prove
+  // the attempt without deleting anything real.
+  const own = makeFs({ [`${HOME}\\memory\\notes.md`]: 'note' })
+  own.sandboxMode = 'workspace-write'
+  delete own.remove
+  let reached = false
+  own.processPath = () => {
+    reached = true
+    return undefined
+  }
+  const allowed = makeCtx(own, makeLlm('{}'))
+  apply(allowed.ctx, trustConfig())
+  const attempted = await callRoute(allowed.routes, '/api/memory/file', {
+    method: 'DELETE',
+    query: '?scope=user&path=notes.md',
+  })
+  assert.equal(attempted.status, 500)
+  assert.match(attempted.json.error, /exposes no path to delete/, 'the fence did not stop it')
+  assert.ok(reached, 'the default policy reaches the unlink step')
 })
 
 await test('the panel browses every project with memory, not just the active session', async () => {

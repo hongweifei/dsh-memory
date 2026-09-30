@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { deleteGuarded, readVersioned } from '../lib/fs.js'
+import { deleteGuarded, memoryWritePolicy, readVersioned } from '../lib/fs.js'
 import { FAILURE_PAUSE_DEFAULT, advanceFailurePause, pausedOutcome, resumePaused } from '../lib/failure-pause.js'
 import { collectTouchedPaths, isJitActive, jitDecision, parseJitTrigger } from '../lib/jit.js'
 import { indexWarnings } from '../lib/memory-file.js'
@@ -1052,18 +1052,34 @@ test('deleteGuarded deletes through the provider when it can, and the OS when it
     })
     assert.equal(existsSync(real), true, 'a read-only backend keeps its file')
 
-    // 4. A file that changed since it was read is not deleted.
+    // 4. `writePolicy: 'session'` refuses the unlink bypass under a fence, and allows it
+    // when the session has no fence at all. The provider's own removal is always preferred,
+    // so this is the only path the flag governs.
+    const fenced = { ...bare, sandboxMode: 'workspace-write' }
+    assert.deepEqual(await deleteGuarded(fenced, real, undefined, signal, false), {
+      error: 'the session sandbox policy (workspace-write) does not allow deleting outside its workspace',
+    })
+    assert.equal(existsSync(real), true, 'the refused delete did not touch the file')
+    const unfenced = { ...bare, sandboxMode: 'danger-full-access' }
+    assert.deepEqual(await deleteGuarded(unfenced, real, undefined, signal, false), {
+      deleted: true,
+      via: 'node:fs',
+    })
+    // Put it back for the cases below, which assert on an existing file.
+    await writeFile(real, 'x')
+
+    // 5. A file that changed since it was read is not deleted.
     const changed = { ...bare, async stat() { return { version: 'v2', type: 'file' } } }
     assert.deepEqual(await deleteGuarded(changed, real, 'v1', signal), {
       error: 'the file changed since it was read',
     })
     assert.equal(existsSync(real), true)
 
-    // 5. Absent is absent, whatever the provider looks like.
+    // 6. Absent is absent, whatever the provider looks like.
     const missing = { ...bare, async stat() { return undefined } }
     assert.deepEqual(await deleteGuarded(missing, real, undefined, signal), { missing: true })
 
-    // 6. No path to hand to the OS: refuse rather than guess.
+    // 7. No path to hand to the OS: refuse rather than guess.
     const opaque = { ...bare, processPath: undefined }
     assert.deepEqual(await deleteGuarded(opaque, real, undefined, signal), {
       error: 'the filesystem exposes no path to delete',
@@ -1134,6 +1150,26 @@ test('resuming clears every armed session and the mirrored state', () => {
   ])
   assert.equal(armed.size, 0)
   assert.equal(state.generationPause, undefined, 'the panel stops showing the pause')
+})
+
+test('a mutation declares the memory directory as its sandbox workspace, unless told to follow the session', () => {
+  // Memory lives under `$DSH_HOME`, outside every session workspace: without this the
+  // harness's workspace-write fence denies every write ("file access denied under
+  // workspace-write mode"), which is exactly what was reported.
+  assert.deepEqual(memoryWritePolicy('C:\\home\\.dsh\\memory', true), {
+    mode: 'workspace-write',
+    workspaceRoot: 'C:\\home\\.dsh\\memory',
+  })
+  // `writePolicy: 'session'` hands the decision back: no policy means the session's applies.
+  assert.equal(memoryWritePolicy('C:\\home\\.dsh\\memory', false), undefined)
+  // Nothing to declare without a directory — never invent a root.
+  assert.equal(memoryWritePolicy(undefined, true), undefined)
+  assert.equal(memoryWritePolicy('', true), undefined)
+})
+
+test('resolveMemoryConfig defaults the write policy to the memory root', () => {
+  const resolved = resolveMemoryConfig(accepted({}))
+  assert.equal(resolved.writePolicy, 'memory-root')
 })
 
 console.log(`\n${passed} tests passed`)
