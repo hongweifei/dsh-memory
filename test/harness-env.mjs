@@ -62,3 +62,28 @@ export function resolveInstalled(specifier) {
 export function packageJsonPath() {
   return resolveInstalled('@dsh-external/dsh-memory/package.json') ?? join(checkoutRoot, 'package.json')
 }
+
+/**
+ * The harness that is actually RUNNING, when it can be found.
+ *
+ * A desktop install bundles the harness into one `app.asar`, so the profile's Node
+ * resolution can keep pointing at an older npm install while the app runs something else
+ * — which is exactly how a version bump slips past a green suite (verified the hard way:
+ * the suite checked 0.1.7-rc.2 while the desktop app ran 0.2.0-rc.2). A check that can
+ * look at the running bundle should, and say which oracle it used.
+ *
+ * @returns the bundle path, or `undefined` when no desktop bundle is installed.
+ */
+export function runningHarnessBundle() {
+  const candidates = [
+    process.env.DSH_HARNESS_BUNDLE,
+    process.env.LOCALAPPDATA === undefined
+      ? undefined
+      : join(process.env.LOCALAPPDATA, 'Programs', 'DeepSeek Harness', 'resources', 'app.asar'),
+    join(homedir(), 'Applications', 'DeepSeek Harness.app', 'Contents', 'Resources', 'app.asar'),
+  ]
+  for (const candidate of candidates) {
+    if (candidate !== undefined && existsSync(candidate)) return candidate
+  }
+  return undefined
+}

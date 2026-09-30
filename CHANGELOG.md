@@ -167,6 +167,19 @@ false: 0 | false | no  | off              // 其他值一律当"未设置"
 - **删除的两处**：越 root 的删除被拒并记入 `failedFiles`；删除算一次**尝试**（两次被拒是 `failed` 而非 `no_change`）。
 - **索引告警**：超限内容**仍然落盘**，只报告（与"advisory"的字面一致）。
 
+### 兼容性（核对过 harness `0.2.0-rc.2`）
+
+- **核对方式是问正在运行的宿主**，不是只信测试替身：宿主 Inspect 的
+  `Service.listService('fs' | 'llm')`、`Event.listEvents('session/event')`、
+  客户端 `Slots.listSubTree('settings.section')`。结论见 README §19——`fs.processPath`（删除靠它）、
+  `GenerateOptions`（我们发的 `RequestUserInput` 合法，且没有发那个闭合的 `purpose`）、
+  `FinishReasonMap`、`ToolSchema` / `ToolResultMessage`、`turn/end` 与 `Session` 读法、
+  `tokenMeter.estimateMessage` 全部未变；面板占用者 `memory-ui/memory` 在新客户端里 `active: true`。
+- **修掉一个会让升级被漏掉的测试盲区**：桌面版把 harness 打包成 `app.asar`，而 profile 的 Node 解析
+  可能仍指向更旧的 npm 安装（本机 `0.1.7-rc.2` 对 `0.2.0-rc.2`），于是"全绿"验的是旧版本。
+  现在 `test/harness-env.mjs` 优先定位**正在运行**的那份（`DSH_HARNESS_BUNDLE` 可显式指定），
+  并新增一条测试：面板用到的每个 `--dsw-*` token 都必须在**运行版 bundle** 里存在，且打印它用的 oracle。
+
 ### 可移植性（仓库里不出现"某台机器"）
 
 源码、文档、示例与测试都**不含写死的绝对路径**：

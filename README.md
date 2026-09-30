@@ -7,7 +7,7 @@
 | 版本 | `0.1.0` |
 | 包名 | `@dsh-external/dsh-memory` |
 | 依据 | 真实 SDK（`@qoder-ai/qoder-agent-sdk@1.0.50`）**＋**安装的 `qodercli` bundle 解码，不是文档推测 |
-| 测试 | **316 项全绿**（`node test/*.test.mjs`）：unit 92 / integration 105 / model 40 / client 34 / architecture 13 / agent 18 / package-shape 10 / resolveMeta 4 |
+| 测试 | **317 项全绿**（`node test/*.test.mjs`）：unit 92 / integration 105 / model 40 / client 35 / architecture 13 / agent 18 / package-shape 10 / resolveMeta 4 |
 | 依赖 | 仅 `@deepseek-ai/schemastery`（提供真正的 `Config` schema）与 `picomatch`（排除规则；Qoder 自己也是这个库） |
 | 设计文档 | [`docs/qoder-memory-model.md`](docs/qoder-memory-model.md)（解出的记忆模型）、[`docs/memory-layers.md`](docs/memory-layers.md)（哪些层归 harness、哪些归本插件） |
 
@@ -377,7 +377,7 @@ node test/harness-env.mjs         # 不是测试：定位 harness 与安装位�
 **环境相关的东西一律自动发现，不写死路径。** harness 会把 `DSH_HOME` / `DSH_PROFILE_DIR`
 导进每个会话，`test/harness-env.mjs` 用它定位已安装的 harness 与本插件；找不到时，
 那几条**依赖安装或会话存储**的检查会自己报 `--  (skipped: …)` 而不是失败（也不假装通过），
-所以纯克隆的仓库仍能跑其余全部检查，只是总数比上面的 316 少几条。
+所以纯克隆的仓库仍能跑其余全部检查，只是总数比上面的 317 少几条。
 
 方法上的三条硬规矩：
 
@@ -408,3 +408,28 @@ node test/harness-env.mjs         # 不是测试：定位 harness 与安装位�
 - **面板预算已满**（§15）：再加东西得先腾地方。
 - **删除的沙箱代价**（§13）：只读后端是主动拒绝，而不是被后端强制拦截。
 - **`projectKey` 有损**（§7）：`D:\a-b` 与 `D:\a\b` 共用一个记忆目录——这是 harness 自己的取舍，本插件继承它。
+
+## 19. 与 harness 版本的兼容
+
+**已核对：桌面版 harness `0.2.0-rc.2`**（以及 profile 解析到的 `0.1.7-rc.2`）。核对方式是**问正在运行的
+宿主本身**，而不是只看自己写的替身：
+
+| 依赖 | 怎么核对的 | 结论 |
+|---|---|---|
+| `fs`（含 `processPath`，删除靠它） | 宿主 Inspect 的 `Service.listService('fs')` | 方法齐全，签名未变 |
+| `llm.stream` 的入参 | `Service.listService('llm')` 的 `GenerateOptions` | 我们发的是合法的 `RequestUserInput`（`{role:'user',content:[…]}`）、`maxTokens?` 可省、**没有**发那个闭合联合 `purpose` |
+| 流式分片 | `StreamChunk` 联合 | 新分片（`usage`、`reasoning-delta`）被我们静默忽略，不会抛 |
+| 结束原因 | `FinishReasonMap` | 与我们的处理一一对应（stop / tool-calls / max-tokens / aborted / error） |
+| 工具调用回填 | `ToolSchema` / `ToolResultMessage` | 我们的 `parameters`、`source.kind:'tool'`、`toolCallId`、`isError` 全部吻合 |
+| 会话与触发点 | `Event.listEvents('session/event')` 的 `SessionEventMap` | `turn/end`（`{turn, reason}`）与 `Session.header/requestHeader/snapshotEvents/deriveMessages` 未变；`EpochHeader.config` 仍是我们在 `resolveRoute` 里读的形状 |
+| 计量 | `tokenMeter.estimateMessage` | 仍在（我们本就带本地启发式兜底） |
+| 面板挂载 | 客户端 `Slots.listSubTree('settings.section')` | 占用者 `{ registrant: 'memory-ui', id: 'memory', order: 60, active: true }` |
+| 主题 token | 面板用到的 **20 个 `--dsw-*` 全在**运行版的 bundle 里（有测试对着它跑） | 无失效 token |
+
+**升级后怎么重新核对**：跑 `node test/*.test.mjs`（那条 token 检查会打印它用的 oracle），
+再问一次上面几个 Inspect 查询即可——`Settings → Memory` 面板本身也是活体证据。
+
+**一个真实的坑**：桌面版把 harness 打包进**一个 `app.asar`**，而 profile 的 Node 解析可能仍指向
+**更旧的 npm 安装**（本机就是 `0.1.7-rc.2` 对 `0.2.0-rc.2`）。于是"测试全绿"可能验的是旧版本——
+这正是升级能被漏掉的方式。`test/harness-env.mjs` 因此优先找**正在运行**的那份
+（可用 `DSH_HARNESS_BUNDLE` 显式指定），找不到就跳过并说明。

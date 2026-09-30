@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import React from 'react'
 import TestRenderer from 'react-test-renderer'
-import { resolveInstalled } from './harness-env.mjs'
+import { resolveInstalled, runningHarnessBundle } from './harness-env.mjs'
 
 const { act } = TestRenderer
 
@@ -23,6 +23,9 @@ const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
 
 /** The Harness's own stylesheets, when this session has them installed: the token oracle. */
 const primitivesPackage = resolveInstalled('@deepseek-ai/dsh-client-ui-primitives/package.json')
+
+/** The harness the user is actually running, when it is a desktop install. */
+const runningBundle = runningHarnessBundle()
 
 let passed = 0
 let skipped = 0
@@ -738,6 +741,23 @@ await test('the nav label follows the active locale', async () => {
   const zh = await renderWithStatus(STATUS, 'zh')
   assert.equal(zh.options.label(), '记忆')
 })
+
+await testIf(
+  runningBundle !== undefined,
+  'every style token exists in the harness the user is RUNNING',
+  'no desktop bundle was found, so only the resolved install can be checked',
+  () => {
+    // The install the profile resolves can be older than the app the user runs (a desktop
+    // install keeps the harness inside one `app.asar`), and a bumped harness is exactly
+    // when a token may be renamed. Its contents are stored uncompressed, so a byte search
+    // answers existence — weaker than reading a CSS rule, stronger than a stale oracle.
+    const bundle = readFileSync(runningBundle)
+    const used = [...new Set([...source.matchAll(/var\((--dsw-[a-z0-9-]+)/g)].map((match) => match[1]))]
+    const missing = used.filter((token) => bundle.indexOf(Buffer.from(token, 'utf8')) === -1)
+    console.log(`  --  oracle: ${runningBundle} (${used.length} tokens)`)
+    assert.deepEqual(missing, [], `these tokens are absent from the running harness: ${missing.join(', ')}`)
+  },
+)
 
 await testIf(
   primitivesPackage !== undefined,
