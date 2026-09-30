@@ -221,6 +221,36 @@ test('the public surface is exactly what index.js exports', () => {
   }
 })
 
+test('no shipped file carries CP936 damage', () => {
+  // Editing a text file with `Get-Content`/`Set-Content` on this machine re-encodes it
+  // through CP936: em dashes and CJK come back as garbage, and a BOM appears. It has
+  // corrupted this repository twice (five source files, then a test file), so the damage
+  // gets a test of its own. The markers are built from code points so this file does not
+  // contain the very characters it looks for.
+  const root2 = join(here, '..')
+  const markers = [0x950b, 0x9225, 0x93b8, 0x93c2, 0x9286, 0x951f, 0x95ff, 0x9428].map((code) =>
+    String.fromCharCode(code),
+  )
+  const skip = new Set(['node_modules', '.git'])
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (skip.has(entry.name)) continue
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        walk(full)
+        continue
+      }
+      if (!/\.(js|mjs|json|md|yml|svg)$/.test(entry.name)) continue
+      const text = readFileSync(full, 'utf8')
+      const where = full.slice(root2.length + 1)
+      const hit = markers.find((marker) => text.includes(marker))
+      assert.equal(hit, undefined, `${where} carries CP936 damage`)
+      assert.notEqual(text.charCodeAt(0), 0xfeff, `${where} starts with a BOM`)
+    }
+  }
+  walk(root2)
+})
+
 test('nothing shipped names an absolute path from one machine', () => {
   // Examples, fixtures and recipes must be something a reader can run anywhere: a
   // concrete home directory (`C:\Users\<name>` or `/home/<name>`) is the marker that one

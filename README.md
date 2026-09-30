@@ -7,7 +7,7 @@
 | 版本 | `0.1.0` |
 | 包名 | `@dsh-external/dsh-memory` |
 | 依据 | 真实 SDK（`@qoder-ai/qoder-agent-sdk@1.0.50`）**＋**安装的 `qodercli` bundle 解码，不是文档推测 |
-| 测试 | **317 项全绿**（`node test/*.test.mjs`）：unit 92 / integration 105 / model 40 / client 35 / architecture 13 / agent 18 / package-shape 10 / resolveMeta 4 |
+| 测试 | **320 项全绿**（`node test/*.test.mjs`）：unit 92 / integration 106 / model 40 / client 36 / architecture 14 / agent 18 / package-shape 10 / resolveMeta 4 |
 | 依赖 | 仅 `@deepseek-ai/schemastery`（提供真正的 `Config` schema）与 `picomatch`（排除规则；Qoder 自己也是这个库） |
 | 设计文档 | [`docs/qoder-memory-model.md`](docs/qoder-memory-model.md)（解出的记忆模型）、[`docs/memory-layers.md`](docs/memory-layers.md)（哪些层归 harness、哪些归本插件） |
 
@@ -186,9 +186,16 @@ Qoder 的 `memory` / `memory_get` 在本插件叫 `memory_list` / `memory_read`�
 ### 设置面板
 
 状态行（插件/模式/生成/消费/巩固/闸门/**信任＋授权按钮**/在飞任务）· **作用域区**：
-`user` 加**每个有记忆的项目**（用 `projectKey` 名字寻址，活动会话的项目排第一），每个文件有
-**打开/删除**按钮 · 预算行 · 活动区（最近生成/消费/巩固 + 告警）· 编辑器（作用域下拉 + 文件名 + 保存/重载/等待）·
+`user` 加**每个有记忆的项目**，**一行一个作用域**，标题写**工作区名字**（如 `EasyGit`，来自
+`workspaceRegistry`；查不到工作区的项目回退成 `projectKey` 目录名，`user` 作用域本来就没有工作区），
+鼠标悬停显示它被寻址的 slug；每行还有「N 个记忆文件」+ 占用大小（宿主没给就**整段省略**，
+不显示 `undefined`、也不用横线占位），文件折叠在行下（`<details>`），展开后每个文件有**打开/删除**；
+预算行 · 活动区（最近生成/消费/巩固 + 告警）· 编辑器（作用域下拉 + 文件名 + 保存/重载/等待）·
 命令提示。中英双语，全部用真实 `--dsw-*` 主题 token。
+
+两个做不到的地方，如实标注：harness 的 `FsInfo` 只有 `version/type/size`、**没有修改时间**，
+所以显示的是**占用大小**而不是"更新于某时"；harness 也**没有"在文件管理器里打开"的能力**
+（曾实现过 `POST /api/memory/reveal` + `subprocess` 打开器，在本机点不开，已按用户要求撤掉）。
 
 ## 5. 与 Qoder 的契约映射
 

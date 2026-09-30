@@ -105,6 +105,8 @@ function makeFs(initial = {}, options = {}) {
       return [...names].map((name) => ({
         name,
         type: dirs.has(`${key}\\${name}`) ? 'directory' : 'file',
+        // Real listings carry cheap metadata; the scope rows show the total size.
+        size: files.get(`${key}\\${name}`)?.length ?? 0,
         target: { targetKey: `${key}\\${name}`, displayPath: name },
       }))
     },
@@ -1725,6 +1727,40 @@ await test('with no active session the panel reports the host fallback as a fall
   assert.equal(response.json.projectFolder.cwd, process.cwd())
 })
 
+await test('a scope is labelled with its workspace name, not its directory slug', async () => {
+  // A project scope is ADDRESSED by slug, but a slug is not a name a person recognises:
+  // `--D-code-demo--` came out of `D:\code\demo`, and only the workspace registry knows
+  // that, because the slug cannot be decoded back into a path.
+  const active = `${HOME}\\projects\\--D-code-demo--\\memory`
+  const orphan = `${HOME}\\projects\\--D-code-orphan--\\memory`
+  const fs = makeFs({ [USER_MEMORY]: '# User', [`${active}\\MEMORY.md`]: '# Demo', [`${orphan}\\MEMORY.md`]: '# Orphan' })
+  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  services.set('workspaceRegistry', {
+    list: () => [
+      { id: 'ws-1', path: 'D:\\code\\demo', title: 'Demo project' },
+      // A record whose path is not a string is skipped, not guessed at.
+      { id: 'ws-3', path: 42 },
+    ],
+  })
+  apply(ctx, trustConfig())
+  services.set('agents', { currentInitiator: () => makeAgent(makeSession([], 'D:\\code\\demo')) })
+
+  const listed = await callRoute(routes, '/api/memory/status', {})
+  const labels = Object.fromEntries(listed.json.roots.map((root) => [root.id, root.label]))
+  // The user scope has no workspace, so it keeps its id; that is its name.
+  assert.equal(labels.user, undefined, 'the user scope stays `user`')
+  assert.equal(labels['--D-code-demo--'], 'Demo project', 'the workspace title is the row title')
+  // A project nobody registered keeps the slug rather than inventing a name.
+  assert.equal(labels['--D-code-orphan--'], undefined, 'an unknown project is not renamed')
+
+  // Without a registry the panel still works: every row falls back to the slug.
+  const bare = makeCtx(fs, makeLlm('{}'))
+  apply(bare.ctx, trustConfig())
+  bare.services.set('agents', { currentInitiator: () => makeAgent(makeSession([], 'D:\\code\\demo')) })
+  const plain = await callRoute(bare.routes, '/api/memory/status', {})
+  assert.deepEqual(plain.json.roots.map((root) => root.label), [undefined, undefined, undefined])
+})
+
 await test('the panel browses every project with memory, not just the active session', async () => {
   // Two projects on disk, one of them the current session's own.
   const active = `${HOME}\\projects\\--D-code-demo--\\memory`
@@ -1744,6 +1780,9 @@ await test('the panel browses every project with memory, not just the active ses
   assert.deepEqual(listed.json.roots.map((root) => root.id), ['user', '--D-code-demo--', '--D-code-other--'])
   assert.equal(listed.json.roots[1].files.length, 1, 'each project lists its own files')
   assert.deepEqual(listed.json.roots[2].files, ['MEMORY.md', 'notes.md'], 'the index leads')
+  // The listing metadata already carries each file's size, so the row can state it.
+  assert.equal(listed.json.roots[2].size, '24 B', 'the scope row reports how much memory it holds')
+  assert.equal(listed.json.roots[1].size, '12 B')
   assert.equal(listed.json.projectFolder.cwd, 'D:\\code\\demo')
 
   // Any listed project is addressable by its directory name: read, write, delete.

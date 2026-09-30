@@ -52,23 +52,28 @@ const STATUS = {
       access: 'read-write',
       indexFile: 'MEMORY.md',
       files: ['MEMORY.md'],
+      size: '1.4 KB',
     },
     // Every project with memory is listed, addressed by its projectKey name; the
     // active session's project comes first. The panel is global settings, so
     // following only the active session was the wrong shape.
     {
       id: '--D-code-demo--',
+      label: 'EasyGit',
       path: 'C:\\home\\.dsh\\projects\\--D-code-demo--\\memory',
       access: 'read-write',
       indexFile: 'MEMORY.md',
       files: ['MEMORY.md', 'packaging.md'],
+      size: '3.4 KB',
     },
     {
       id: '--D-code-renderer--',
+      label: 'DLSS5-Video-Image-Renderer-Anyway',
       path: 'C:\\home\\.dsh\\projects\\--D-code-renderer--\\memory',
       access: 'read-write',
       indexFile: 'MEMORY.md',
       files: ['MEMORY.md', 'renderer-project.md'],
+      size: '11.6 KB',
     },
   ],
   // Which folder the active session is in, so the note above the cards can name it.

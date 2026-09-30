@@ -70,6 +70,19 @@
   `failureMode` 的标签直接带枚举含义（`truncate | fail_query`、`best_effort | fail_query`），
   并补上生成侧的两个旋钮（输出上限 `0 = 模型默认`、连续失败暂停阈值 `0 = 永不`）。
   原先只显示一半的 token 故事，正是"输出预算被烧光却没人发现"的土壤。
+- **作用域区是一行一个作用域的列表**：**标题是工作区名字**（`EasyGit` 而不是
+  `--D-Projects-EasyGit--`；用 `workspaceRegistry` 的路径**正向**算出 slug 来配对——slug 有损、
+  反推不出路径，所以只有这个方向可行；查不到工作区的项目回退成 slug，`user` 作用域本来就没有），
+  悬停显示 slug；行内还有读写标签 + 「N 个记忆文件」+ 占用大小（宿主没给就**整段省略**，
+  不显示 `undefined`、也不拿横线占位），文件折叠在行下（`<details>`，展开后逐文件打开/删除）。
+  整行禁止换行：长项目名省略号截断，不会把按钮挤到第二行；列表与上方说明之间留 8px 间距。
+  行显示**占用大小**而不是"更新于"——harness 的 `FsInfo` 只有 `version/type/size`，
+  没有修改时间，编不出来。
+- **「打开目录」做过、又撤掉了**（如实记录）：harness 没有"在文件管理器里打开"的能力，实现是让
+  `subprocess` 服务 spawn `explorer.exe`（失败退 `cmd /c start`）。本机点了打不开，而这条链路在
+  测试里只能验 argv/stdio 形状、验不了"窗口真的出现了"，于是按用户要求撤掉：面板不再有该按钮，
+  `POST /api/memory/reveal` 与 `lib/reveal.js` 一并删除。留给将来的一条证据：**这条路在当前
+  harness 上不通**，别再从面板侧绕。
 - `/memory`、`/memory-trust`、`/memory-imports`、`/memory-delete`、`/memory-refresh`、
   `/memory-flush`、`/memory-resume`。
 
@@ -197,7 +210,7 @@ false: 0 | false | no  | off              // 其他值一律当"未设置"
 
 ### 验证
 
-**316 项测试全绿**：unit 92 / integration 105 / model 40 / client 34 / architecture 13 /
+**320 项测试全绿**：unit 92 / integration 106 / model 40 / client 36 / architecture 14 /
 agent 18 / package-shape 10 / resolveMeta 4。跑法见 README §16；其中依赖"本机装了 harness"
 或"本机有会话存储"的少数检查会自行跳过，总数会因此少几条。
 
@@ -212,6 +225,10 @@ agent 18 / package-shape 10 / resolveMeta 4。跑法见 README §16；其中依�
 - 增量注入 → 去掉"与上次比较"，集成红在"a delta must not declare itself a snapshot"。
 - 读盘快进 → 禁用缓存命中，unit 红在"an unchanged version must not be re-read"。
 - 转录游标 → 换回 `collectTurn(session, turn)`，集成红在"first turn prompt must reach the model"。
+- **一次自伤，记下来当教训**：用 `Get-Content`/`Set-Content` 编辑了 `test/integration.test.mjs`
+  （文件里有 `—` 与中文），CP936 往返把文件**编坏**了——乱码、`—` 全丢、还多了 BOM。
+  已从 git 恢复并重做那几处改动。新增一条架构测试补上这个盲区：
+  **仓库里任何文本文件出现 CP936 乱码标记或 BOM 就失败**（标记用码点构造，测试自己不含这些字符）。
 - 索引告警 → `applyOneWrite` 不算告警，集成红在超限索引那条；把解出的原句改写，模型测试红。
 - 失败原因 → 去掉 `summarizeWrites` 的回退，agent 测试红在 "a refused write with no stated
   reason still explains the failure"；把面板的 `last.reason` 拿掉，client 测试红在

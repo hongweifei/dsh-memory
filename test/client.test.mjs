@@ -211,8 +211,18 @@ const STATUS = {
       access: 'read-write',
       indexFile: 'MEMORY.md',
       files: ['MEMORY.md', 'NOTES.md'],
+      size: '2.0 KB',
     },
-    { id: 'project', path: 'C:\\proj\\.dsh\\memory', access: 'read', indexFile: 'MEMORY.md', files: [] },
+    {
+      id: 'project',
+      // The host labels a project scope with its workspace name; `user` has none.
+      label: 'Demo project',
+      path: 'C:\\proj\\.dsh\\memory',
+      access: 'read',
+      indexFile: 'MEMORY.md',
+      files: [],
+      size: '0 B',
+    },
   ],
 }
 
@@ -556,7 +566,11 @@ await test('a read-write scope offers delete per file, and a read-only one does 
   const { text, renderer } = await renderWithStatus(STATUS, 'en', { keep: true, calls })
   // Two files in the read-write user scope, none in the read-only project scope.
   assert.equal((text.match(/Delete/g) || []).length, 2, 'one delete per file in the writable scope')
-  assert.equal((text.match(/Open/g) || []).length, 2)
+  // Counted by button text: the scope row has no buttons of its own.
+  const openPerFile = renderer.root.findAll(
+    (node) => node.type === 'button' && collectText(node.props.children).trim() === 'Open',
+  )
+  assert.equal(openPerFile.length, 2, 'one open per file in the writable scope')
 
   const buttons = renderer.root.findAll(
     (node) => node.type === 'button' && collectText(node.props.children).trim() === 'Delete',
@@ -592,6 +606,49 @@ await test('a read-write scope offers delete per file, and a read-only one does 
   )
   assert.match(readOnly.text, /Open/)
   assert.ok(!readOnly.text.includes('Delete'), 'a read-only scope must not offer a delete it would refuse')
+})
+
+await test('the scope list is a row per scope, each able to open its directory', async () => {
+  // The section must read as a LIST of scopes: one row per scope, with its size, and its
+  // files folded away underneath — not a wall of file names.
+  const calls = []
+  const { text, json, renderer } = await renderWithStatus(STATUS, 'en', { keep: true, calls })
+
+  const rows = renderer.root.findAll((node) => node.type === 'summary')
+  assert.equal(rows.length, STATUS.roots.length, 'one summary row per scope')
+  assert.match(text, /2 memory file\(s\) · 2\.0 KB/, 'the row states how much memory the scope holds')
+  // A host that sends no size gets no separator either: a missing value is omitted rather
+  // than replaced by a dash (which reads as "there is a value here, it is just odd").
+  const sizeless = await renderWithStatus(
+    { ...STATUS, roots: STATUS.roots.map(({ size, ...root }) => root) },
+    'en',
+  )
+  assert.match(sizeless.text, /2 memory file\(s\)/)
+  assert.doesNotMatch(
+    sizeless.text,
+    /memory file\(s\)[^\n]*[·—]/,
+    'the missing size is left out, not replaced by a separator or a dash',
+  )
+  // The note above the list explains which folder the project scope means; the list needs
+  // to breathe, or the two read as one paragraph.
+  assert.match(source, /\.dshmem-list\{[^}]*margin-top:/, 'the list needs a gap below that note')
+  // A row shows the workspace NAME; the addressable slug stays as the tooltip, because
+  // that is what a scope is addressed by (and what `user` has instead of a name).
+  assert.match(text, /Demo project/)
+  const named = renderer.root.findAll((node) => node.type === 'span' && node.props.title === 'project')[0]
+  assert.equal(collectText(named.props.children).trim(), 'Demo project')
+  assert.match(text, /\buser\b/, 'a scope without a workspace still shows its id')
+
+  // Each row lives inside a `<details>`, so the files are one click away and hidden until
+  // then — the difference between a scope list and a file dump. (Opening a directory in the
+  // file manager was removed: the harness has no such capability, and the spawn path could
+  // not be made to work here.)
+  const scopes = renderer.root.findAll((node) => node.type === 'details')
+  assert.equal(scopes.length, STATUS.roots.length)
+  assert.ok(!scopes[0].props.open, 'the files start folded')
+  renderer.unmount()
+  assert.match(json, /dshmem-scope/, 'the row keeps its own class')
+  assert.ok(!calls.some((url) => url.includes('/reveal')), 'no directory-opening request is made')
 })
 
 await test('a failed generation explains itself instead of just saying "failed"', async () => {
