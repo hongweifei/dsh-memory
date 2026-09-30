@@ -78,18 +78,27 @@
   整行禁止换行：长项目名省略号截断，不会把按钮挤到第二行；列表与上方说明之间留 8px 间距。
   行显示**占用大小**而不是"更新于"——harness 的 `FsInfo` 只有 `version/type/size`，
   没有修改时间，编不出来。
-- **记忆写入不再被会话沙箱挡住**（用户报告的 `file access denied under workspace-write mode`）。
-  记忆按契约放在 `$DSH_HOME`，**永远在会话工作区之外**；harness 的沙箱后端按策略给"变更"上围栏
-  （`workspace-write` 只放行落在工作区内的目标），而 `writeText` 的**第 5 个参数正是"本次调用的
-  mode + workspaceRoot"**，省略就套用会话策略——所以每次记忆写入天生被拒，而**读不受限**（记忆
-  一直能加载，只有写会失败）。现在新增 `writePolicy`：
-  - `memory-root`（**默认**）：记忆与插件自有存储（信任库、巩固锁与状态）在写入时声明自己的目录
+- **记忆写入不再被"非会话的"沙箱默认值挡住**（用户报告的 `file access denied under workspace-write
+  mode`——且当时**会话本身是完全权限**）。记忆按契约放在 `$DSH_HOME`，**永远在会话工作区之外**；harness
+  的沙箱后端对一次**没有声明策略**的调用是这么解围栏的：
+
+  ```js
+  const policy = sandboxPolicy ?? this.ctx.sandboxPolicy.resolve();   // dsh-fs-sandbox
+  ```
+
+  **不带会话**的 `resolve()` 只回**部署默认值**（本部署 `mode: workspace-write`，根是 harness 自己的
+  工作目录），它**不会自己去找会话**——所以会话被切成完全权限也救不了这次写入，而**读不受限**
+  （"the mutation fence does not restrict observation"），于是记忆一直能加载、只有写失败。新增
+  `writePolicy`：
+  - `memory-root`（**默认**）：记忆与插件自有存储（信任库、巩固锁与状态）在写入时声明**自己的目录**
     作为沙箱根，写仍被插件自己的路径校验限在作用域内，任何会话策略下记忆都可写；
-  - `session`：完全跟随会话策略，受限模式下记忆变**只读**；此时**删除也不再走 `node:fs`
-    绕过围栏**，而是直接拒绝（`deleteGuarded` 的 `allowOutsideFence`），因为 provider 的 `remove`
-    本身受围栏约束、`processPath` 的 unlink 不受。
-  面板状态区新增一行「记忆写入（memory-root＝自声明沙箱根 | session＝跟随会话策略）· <会话模式>」，
-  `/memory` 也打一行并在只读时明说原因。
+  - `session`：**真的去问那个会话**（`resolve({ session })`，与 harness 自己的工具同一条路径——
+    `resolve(exec.agent === undefined ? {} : { session: exec.agent.session })`），受限模式下记忆变
+    **只读**；此时**删除也不再走 `node:fs` 绕过围栏**，而是按会话模式拒绝（provider 的 `remove` 本身
+    受围栏约束、`processPath` 的 unlink 不受）。没有会话可问（定时触发的巩固）就退到部署默认值。
+  面板那一行是「记忆写入（memory-root＝自声明沙箱根 | session＝跟随会话策略）· 声明的模式」，当
+  `memory-root` 与受限会话并存时再补一段「· session <会话模式>」——两个数字分开显示，才不会把"完全
+  权限的会话"看成"被围栏的会话"；`/memory` 打同一组事实并在只读时明说原因。
   `subprocess` 服务 spawn `explorer.exe`（失败退 `cmd /c start`）。本机点了打不开，而这条链路在
   测试里只能验 argv/stdio 形状、验不了"窗口真的出现了"，于是按用户要求撤掉：面板不再有该按钮，
   `POST /api/memory/reveal` 与 `lib/reveal.js` 一并删除。留给将来的一条证据：**这条路在当前
@@ -221,7 +230,7 @@ false: 0 | false | no  | off              // 其他值一律当"未设置"
 
 ### 验证
 
-**325 项测试全绿**：unit 94 / integration 108 / model 40 / client 37 / architecture 14 /
+**329 项测试全绿**：unit 95 / integration 111 / model 40 / client 37 / architecture 14 /
 agent 18 / package-shape 10 / resolveMeta 4。跑法见 README §16；其中依赖"本机装了 harness"
 或"本机有会话存储"的少数检查会自行跳过，总数会因此少几条。
 

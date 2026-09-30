@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { deleteGuarded, memoryWritePolicy, readVersioned } from '../lib/fs.js'
+import { deleteGuarded, memoryGuard, readVersioned } from '../lib/fs.js'
 import { FAILURE_PAUSE_DEFAULT, advanceFailurePause, pausedOutcome, resumePaused } from '../lib/failure-pause.js'
 import { collectTouchedPaths, isJitActive, jitDecision, parseJitTrigger } from '../lib/jit.js'
 import { indexWarnings } from '../lib/memory-file.js'
@@ -1054,14 +1054,15 @@ test('deleteGuarded deletes through the provider when it can, and the OS when it
 
     // 4. `writePolicy: 'session'` refuses the unlink bypass under a fence, and allows it
     // when the session has no fence at all. The provider's own removal is always preferred,
-    // so this is the only path the flag governs.
-    const fenced = { ...bare, sandboxMode: 'workspace-write' }
-    assert.deepEqual(await deleteGuarded(fenced, real, undefined, signal, false), {
+    // so this is the only path the gate governs — and the gate is the SESSION's mode.
+    assert.deepEqual(await deleteGuarded(bare, real, undefined, signal, 'workspace-write'), {
       error: 'the session sandbox policy (workspace-write) does not allow deleting outside its workspace',
     })
     assert.equal(existsSync(real), true, 'the refused delete did not touch the file')
-    const unfenced = { ...bare, sandboxMode: 'danger-full-access' }
-    assert.deepEqual(await deleteGuarded(unfenced, real, undefined, signal, false), {
+    assert.deepEqual(await deleteGuarded(bare, real, undefined, signal, 'read-only'), {
+      error: 'the session sandbox policy (read-only) does not allow deleting outside its workspace',
+    })
+    assert.deepEqual(await deleteGuarded(bare, real, undefined, signal, 'danger-full-access'), {
       deleted: true,
       via: 'node:fs',
     })
@@ -1156,15 +1157,57 @@ test('a mutation declares the memory directory as its sandbox workspace, unless 
   // Memory lives under `$DSH_HOME`, outside every session workspace: without this the
   // harness's workspace-write fence denies every write ("file access denied under
   // workspace-write mode"), which is exactly what was reported.
-  assert.deepEqual(memoryWritePolicy('C:\\home\\.dsh\\memory', true), {
-    mode: 'workspace-write',
-    workspaceRoot: 'C:\\home\\.dsh\\memory',
+  const config = { writePolicy: 'memory-root' }
+  assert.deepEqual(memoryGuard({}, config, undefined, 'C:\\home\\.dsh\\memory'), {
+    policy: { mode: 'workspace-write', workspaceRoot: 'C:\\home\\.dsh\\memory' },
+    fenceMode: undefined,
   })
-  // `writePolicy: 'session'` hands the decision back: no policy means the session's applies.
-  assert.equal(memoryWritePolicy('C:\\home\\.dsh\\memory', false), undefined)
   // Nothing to declare without a directory — never invent a root.
-  assert.equal(memoryWritePolicy(undefined, true), undefined)
-  assert.equal(memoryWritePolicy('', true), undefined)
+  assert.equal(memoryGuard({}, config, undefined, undefined).policy, undefined)
+  assert.equal(memoryGuard({}, config, undefined, '').policy, undefined)
+})
+
+test('following the session resolves THAT session, not the deployment default', () => {
+  // The harness's backend resolves `ctx.sandboxPolicy.resolve()` — with NO session — for a
+  // call that declares no policy, which yields the deployment default rather than the
+  // session the write belongs to. That is why a memory write was denied under
+  // `workspace-write` while the session itself ran with full access. The plugin asks for the
+  // session explicitly, exactly as the harness's own tools do.
+  const session = { id: 'session-1', header: { cwd: 'D:\\code\\demo' } }
+  const requests = []
+  const ctx = {
+    get: (name) =>
+      name === 'sandboxPolicy'
+        ? {
+            resolve: (request) => {
+              requests.push(request)
+              return request.session === undefined
+                ? { mode: 'workspace-write', workspaceRoot: 'C:\\host' }
+                : { mode: 'danger-full-access', workspaceRoot: request.session.header.cwd, sessionId: 'session-1' }
+            },
+          }
+        : undefined,
+  }
+  const config = { writePolicy: 'session' }
+  assert.deepEqual(memoryGuard(ctx, config, session, 'C:\\home\\.dsh\\memory'), {
+    policy: { mode: 'danger-full-access', workspaceRoot: 'D:\\code\\demo', sessionId: 'session-1' },
+    fenceMode: 'danger-full-access',
+  })
+  assert.deepEqual(requests, [{ session }], 'the session was asked for, not the deployment default')
+
+  // A fenced session: its own policy is declared, and the unlink bypass is refused.
+  const fenced = { get: () => ({ resolve: () => ({ mode: 'read-only', workspaceRoot: 'D:\\code\\demo' }) }) }
+  assert.deepEqual(memoryGuard(fenced, config, session, 'C:\\home\\.dsh\\memory'), {
+    policy: { mode: 'read-only', workspaceRoot: 'D:\\code\\demo' },
+    fenceMode: 'read-only',
+  })
+  // No session at all (a timer-driven pass): the deployment default is what is left.
+  assert.equal(memoryGuard(fenced, config, undefined, 'C:\\home\\.dsh\\memory').policy.mode, 'read-only')
+  // A deployment with no policy service: nothing to declare, and the strict assumption.
+  assert.deepEqual(memoryGuard({}, config, session, 'C:\\home\\.dsh\\memory'), {
+    policy: undefined,
+    fenceMode: 'workspace-write',
+  })
 })
 
 test('resolveMemoryConfig defaults the write policy to the memory root', () => {

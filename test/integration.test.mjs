@@ -1799,6 +1799,108 @@ await test('memory writes declare the memory root as their sandbox workspace', a
   assert.equal(sessionFs.writes.at(-1).sandboxPolicy, undefined, 'no policy is declared')
 })
 
+await test('following the session consults that session instead of the deployment default', async () => {
+  // Reported live: a memory write was refused under `workspace-write` — "cannot write
+  // "<memory file>": file access denied under workspace-write mode" — while the session
+  // itself ran with FULL access. The backend resolves `sandboxPolicy.resolve()` with no
+  // session for a call that declares no policy, so it fences against the deployment default
+  // and never consults the session. Under `writePolicy: 'session'` the plugin therefore has
+  // to hand the session over, exactly as the harness's own tools do, or "follows the
+  // session" is a lie in both directions.
+  const fs = makeFs({ [USER_MEMORY]: '# Index' })
+  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, loadConfig({ mode: 'custom', writePolicy: 'session', generation: { turnComplete: { enabled: false } } }))
+  services.set('agents', { currentInitiator: () => makeAgent(makeSession([], 'D:\\code\\demo')) })
+  const asked = []
+  services.set('sandboxPolicy', {
+    resolve: (request = {}) => {
+      asked.push(request)
+      return request.session === undefined
+        ? { mode: 'workspace-write', workspaceRoot: process.cwd() }
+        : {
+            mode: 'danger-full-access',
+            workspaceRoot: request.session.header.cwd,
+            sessionId: request.session.id,
+          }
+    },
+  })
+
+  const written = await callRoute(routes, '/api/memory/file', {
+    method: 'POST',
+    body: { scope: 'user', path: 'notes.md', content: 'body' },
+  })
+  assert.equal(written.status, 200)
+  assert.deepEqual(
+    fs.writes.at(-1).sandboxPolicy,
+    { mode: 'danger-full-access', workspaceRoot: 'D:\\code\\demo', sessionId: 'session-1' },
+    "the session's own policy is declared, not the deployment default",
+  )
+  assert.equal(asked.length > 0 && asked.every((request) => request.session !== undefined), true, 'the session was asked for')
+
+  // The panel's write-policy row reports that same resolved mode; before this it showed the
+  // deployment default, which is how a full-access session looked like a fenced one.
+  const full = await callRoute(routes, '/api/memory/status', {})
+  assert.equal(full.json.writePolicy, 'session')
+  assert.equal(full.json.sandboxMode, 'danger-full-access')
+  assert.equal(full.json.sessionMode, 'danger-full-access')
+
+  // A session that is genuinely fenced says so, which is what the row is for.
+  services.set('sandboxPolicy', { resolve: () => ({ mode: 'read-only', workspaceRoot: 'D:\\code\\demo' }) })
+  const fenced = await callRoute(routes, '/api/memory/status', {})
+  assert.equal(fenced.json.sandboxMode, 'read-only')
+  assert.equal(fenced.json.sessionMode, 'read-only')
+
+  // With no session in scope (a timer-driven pass) the deployment default is all there is.
+  services.set('sandboxPolicy', {
+    resolve: (request = {}) =>
+      request.session === undefined
+        ? { mode: 'workspace-write', workspaceRoot: process.cwd() }
+        : { mode: 'read-only', workspaceRoot: request.session.header.cwd },
+  })
+  services.set('agents', { currentInitiator: () => undefined })
+  const agentless = await callRoute(routes, '/api/memory/status', {})
+  assert.equal(agentless.json.sandboxMode, 'workspace-write')
+  assert.equal(agentless.json.sessionMode, undefined, 'no session answered, so none is reported')
+})
+
+await test('the default memory-root policy reports the mode its own writes declare', async () => {
+  // `memory-root` declares the memory directory as the write's workspace, so the session's
+  // mode is irrelevant to it — and the row must not pretend the session's fence is in play.
+  const fs = makeFs({ [USER_MEMORY]: '# Index' })
+  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, trustConfig())
+  services.set('agents', { currentInitiator: () => makeAgent(makeSession([], 'D:\\code\\demo')) })
+  services.set('sandboxPolicy', { resolve: () => ({ mode: 'read-only', workspaceRoot: 'D:\\code\\demo' }) })
+  const status = await callRoute(routes, '/api/memory/status', {})
+  assert.equal(status.json.writePolicy, 'memory-root')
+  assert.equal(status.json.sandboxMode, 'workspace-write')
+  assert.equal(status.json.sessionMode, 'read-only', 'the session is still reported honestly')
+})
+
+await test('`/memory` reports the policy, the declared mode and the session mode together', async () => {
+  // One number cannot say both facts: under the default policy memory keeps writing while a
+  // fenced session is in force, and the report has to be readable as that.
+  const fs = makeFs({ [USER_MEMORY]: '# Index' })
+  const agent = makeAgent(makeSession([], 'D:\\code\\demo'))
+  const own = makeCtx(fs, makeLlm('{}'))
+  apply(own.ctx, trustConfig())
+  own.services.set('sandboxPolicy', { resolve: () => ({ mode: 'read-only', workspaceRoot: 'D:\\code\\demo' }) })
+  const report = await runCommand(own.commands, 'memory', { agent })
+  assert.match(report.text, /write policy: memory-root \(workspace-write\)/)
+  assert.match(report.text, /writes use the memory root; the session's own policy is read-only/)
+
+  // Following the session, memory IS read-only, and the line says so plus the way out.
+  const following = makeCtx(fs, makeLlm('{}'))
+  apply(
+    following.ctx,
+    loadConfig({ mode: 'custom', writePolicy: 'session', generation: { turnComplete: { enabled: false } } }),
+  )
+  following.services.set('sandboxPolicy', { resolve: () => ({ mode: 'read-only', workspaceRoot: 'D:\\code\\demo' }) })
+  const readOnly = await runCommand(following.commands, 'memory', { agent })
+  assert.match(readOnly.text, /write policy: session \(read-only\)/)
+  assert.match(readOnly.text, /memory is READ-ONLY under this session's sandbox \(read-only\)/)
+})
+
 await test('a session-following policy stops the delete that would bypass the fence', async () => {
   // The provider's own removal is fenced; an unlink through `processPath` is not. Following
   // the session means refusing that bypass rather than reaching around a fence it asked for.

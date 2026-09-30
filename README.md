@@ -7,7 +7,7 @@
 | 版本 | `0.1.0` |
 | 包名 | `@dsh-external/dsh-memory` |
 | 依据 | 真实 SDK（`@qoder-ai/qoder-agent-sdk@1.0.50`）**＋**安装的 `qodercli` bundle 解码，不是文档推测 |
-| 测试 | **325 项全绿**（`node test/*.test.mjs`）：unit 94 / integration 108 / model 40 / client 37 / architecture 14 / agent 18 / package-shape 10 / resolveMeta 4 |
+| 测试 | **329 项全绿**（`node test/*.test.mjs`）：unit 95 / integration 111 / model 40 / client 37 / architecture 14 / agent 18 / package-shape 10 / resolveMeta 4 |
 | 依赖 | 仅 `@deepseek-ai/schemastery`（提供真正的 `Config` schema）与 `picomatch`（排除规则；Qoder 自己也是这个库） |
 | 设计文档 | [`docs/qoder-memory-model.md`](docs/qoder-memory-model.md)（解出的记忆模型）、[`docs/memory-layers.md`](docs/memory-layers.md)（哪些层归 harness、哪些归本插件） |
 
@@ -76,7 +76,7 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
     mode: native              # native | custom
     userScope: true           # $DSH_HOME/memory/
     projectScope: true        # $DSH_HOME/projects/<projectKey>/memory/  （不在仓库里）
-    writePolicy: memory-root  # 记忆写入声明的沙箱根；memory-root＝自声明记忆目录，session＝交给会话策略
+    writePolicy: memory-root  # 记忆写入声明的沙箱根；memory-root＝自声明记忆目录，session＝去问当前会话
     projectRootMarkers: []    # 空＝会话 cwd 就是项目（harness 的分组方式）；['.git']＝整个仓库一份记忆
     excludes: []              # gitignore 风格 glob（picomatch），只对项目作用域生效
     #   - '**/*.draft.md'
@@ -140,12 +140,18 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
   `danger-full-access` 不设围栏。
 - **读不受限**（"the mutation fence does not restrict observation"）——所以记忆**一直能加载**，
   只有写入会失败，报的就是 `file access denied under workspace-write mode`。
-- `writeText`/`editText` 的第 5 个参数就是"本次调用的 mode + workspaceRoot"，省略则套用会话策略。
+- `writeText`/`editText` 的第 5 个参数是"本次调用的 mode + workspaceRoot"。**省略它并不等于"跟随会话"**：
+  后端只做 `sandboxPolicy ?? ctx.sandboxPolicy.resolve()`，而不带会话的 `resolve()` 回的是**部署默认值**
+  （本部署 `mode: workspace-write`，根是 harness 自己的工作目录）——它**不会自己去找会话**。所以"会话已经
+  是**完全权限**，写记忆却仍被 `workspace-write` 拒绝"是必然的：那次调用**从没问过会话**。要问会话就得像
+  harness 自己的工具那样显式传会话（`resolve(exec.agent === undefined ? {} : { session: exec.agent.session })`）。
 
 因此本插件默认 `writePolicy: memory-root`：**记忆与它自己的存储（信任库、巩固锁与状态）在写入时
 声明自己的目录作为沙箱根**，写仍被插件自己的路径校验限在作用域内，但在 `workspace-write` 会话下
-照常可用。设成 `session` 则完全跟随会话策略：受限模式下记忆变成**只读**，面板与 `/memory` 会明说
-（`session` 时删除也不再走 `node:fs` 绕过围栏，而是直接拒绝）。
+照常可用。设成 `session` 则**真的去问当前会话**：受限模式下记忆变成**只读**，面板与 `/memory` 会明说
+（`session` 时删除也不再走 `node:fs` 绕过围栏，而是按会话模式直接拒绝）；没有会话可问的定时任务退到
+部署默认值。两者不一致时面板那一行显示两段模式——`memory-root · workspace-write · session read-only`
+——两个数字分开显示，才不会把"完全权限的会话"看成"被围栏的会话"。
 
 **关于 `maxOutputTokens`**：SDK 的 `SerializableMemoryGenerationOptions` 里**没有这个字段**
 （只有 `enabled` / `roots` / `prompt` / `turnComplete`），所以它是本插件自己的旋钮，

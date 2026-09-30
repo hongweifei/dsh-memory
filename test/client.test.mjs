@@ -576,6 +576,21 @@ await test('the panel says which sandbox policy memory writes declare', async ()
   const bare = await renderWithStatus({ ...STATUS, writePolicy: 'memory-root' }, 'en')
   assert.match(bare.text, /memory-root\n/)
   assert.doesNotMatch(bare.text, /memory-root ·/)
+
+  // `memory-root` writes while the session itself is fenced: both modes are shown, so the
+  // row cannot be read as "the session allows this".
+  const both = await renderWithStatus(
+    { ...STATUS, writePolicy: 'memory-root', sandboxMode: 'workspace-write', sessionMode: 'read-only' },
+    'en',
+  )
+  assert.match(both.text, /memory-root · workspace-write · session read-only/)
+  // The same mode on both sides is said once.
+  const same = await renderWithStatus(
+    { ...STATUS, writePolicy: 'session', sandboxMode: 'read-only', sessionMode: 'read-only' },
+    'en',
+  )
+  assert.match(same.text, /session · read-only/)
+  assert.doesNotMatch(same.text, /read-only · session/)
 })
 
 await test('a read-write scope offers delete per file, and a read-only one does not', async () => {
