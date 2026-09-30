@@ -379,6 +379,27 @@ test('the consolidation prompt keeps Qoder\'s phases and budget', () => {
   assert.match(prompt, /Do not exhaustively read transcripts/)
 })
 
+test('the prompt states the write budget the toolkit enforces', () => {
+  // Reported live: a pass asked for a fifth file, the toolkit stopped it at four, and nothing
+  // in the prompt had ever said four. A limit the model is not told about is a trap.
+  const budget = { maxWrites: 4, maxWriteBytes: 16384 }
+  const prompt = autoMemorySystemPrompt([{ id: 'user', path: 'C:\\u', access: 'read-write' }], '', budget)
+  assert.match(prompt, /at most 4 files per pass across every scope \(the index counts as one of them\)/)
+  assert.match(prompt, /at most 16384 bytes per file/)
+  assert.match(prompt, /A write past the budget is not attempted/)
+
+  // The consolidation pass enforces the same budget, so it is taught the same numbers.
+  const dream = dreamSystemPrompt([{ id: 'user', path: 'C:\\u', indexFile: 'MEMORY.md' }], budget)
+  assert.match(dream, /at most 4 files per pass across every scope/)
+
+  // `0 = no cap` is this port's convention for these knobs; there is then nothing to teach.
+  const uncapped = autoMemorySystemPrompt([{ id: 'user', path: 'C:\\u', access: 'read-write' }], '', {
+    maxWrites: 0,
+    maxWriteBytes: 0,
+  })
+  assert.doesNotMatch(uncapped, /budget this deployment enforces/)
+})
+
 test('the consolidation prompt tells the model that pruning means deleting', () => {
   const prompt = dreamSystemPrompt([{ id: 'user', path: 'C:\\u', indexFile: 'MEMORY.md' }])
   // Verbatim from qodercli, and the sentence that puts deletion in the model's job.

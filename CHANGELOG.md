@@ -78,6 +78,10 @@
   整行禁止换行：长项目名省略号截断，不会把按钮挤到第二行；列表与上方说明之间留 8px 间距。
   行显示**占用大小**而不是"更新于"——harness 的 `FsInfo` 只有 `version/type/size`，
   没有修改时间，编不出来。
+  `subprocess` 服务 spawn `explorer.exe`（失败退 `cmd /c start`）。本机点了打不开，而这条链路在
+  测试里只能验 argv/stdio 形状、验不了"窗口真的出现了"，于是按用户要求撤掉：面板不再有该按钮，
+  `POST /api/memory/reveal` 与 `lib/reveal.js` 一并删除。留给将来的一条证据：**这条路在当前
+  harness 上不通**，别再从面板侧绕。
 - **记忆写入不再被"非会话的"沙箱默认值挡住**（用户报告的 `file access denied under workspace-write
   mode`——且当时**会话本身是完全权限**）。记忆按契约放在 `$DSH_HOME`，**永远在会话工作区之外**；harness
   的沙箱后端对一次**没有声明策略**的调用是这么解围栏的：
@@ -99,10 +103,20 @@
   面板那一行是「记忆写入（memory-root＝自声明沙箱根 | session＝跟随会话策略）· 声明的模式」，当
   `memory-root` 与受限会话并存时再补一段「· session <会话模式>」——两个数字分开显示，才不会把"完全
   权限的会话"看成"被围栏的会话"；`/memory` 打同一组事实并在只读时明说原因。
-  `subprocess` 服务 spawn `explorer.exe`（失败退 `cmd /c start`）。本机点了打不开，而这条链路在
-  测试里只能验 argv/stdio 形状、验不了"窗口真的出现了"，于是按用户要求撤掉：面板不再有该按钮，
-  `POST /api/memory/reveal` 与 `lib/reveal.js` 一并删除。留给将来的一条证据：**这条路在当前
-  harness 上不通**，别再从面板侧绕。
+- **单轮写入预算不再伪装成失败**（用户报告的 `写入被拒 status.md：at most 4 files may be written per
+  pass`）。`generation.maxWrites`（默认 **4**）是本插件自己的防跑飞上限——Qoder 的 SDK 与 qodercli
+  **都没有这个字段**（`SerializableMemoryGenerationOptions` 只有 enabled/roots/prompt/turnComplete，
+  bundle 里也搜不到 maxWrites）——但第一版**既没在提示里写明它，又把撞线记成 failed**，于是"一轮写了
+  4 个、第 5 个被拦"在面板上变成 `写入被拒 <文件>：…`，一轮已经干完的 pass 看起来是坏的。现在两半都
+  补齐：
+  - 提示里新增 `── port (the budget this deployment enforces)`，写明每轮文件数（**索引也算一个**）
+    与单文件字节数，并说明"超预算的写入不会被尝试、下一轮从索引继续"；
+  - 撞线的写入记为 **deferred**（`deferredFiles`；状态仍是 `saved`，`failedFiles` 不再被污染），
+    模型侧收到 `not attempted: the per-pass write budget (N) is spent — the next pass continues from
+    the index`，`/memory` 用 `deferred:` 单列一行；JSON 计划那条回退路径原先用
+    `slice(0, maxWrites)` **静默丢弃**多余条目，现在同样如实记为 deferred。
+  `maxWrites: 0` 也改成**不设上限**，与 `maxOutputTokens` / `maxWriteBytes` 的 `0＝不设上限` 约定
+  一致（在此之前 0 会让每一次写入都被拒，与 README 的说明相反）。
 - `/memory`、`/memory-trust`、`/memory-imports`、`/memory-delete`、`/memory-refresh`、
   `/memory-flush`、`/memory-resume`。
 
@@ -230,7 +244,7 @@ false: 0 | false | no  | off              // 其他值一律当"未设置"
 
 ### 验证
 
-**329 项测试全绿**：unit 95 / integration 111 / model 40 / client 37 / architecture 14 /
+**332 项测试全绿**：unit 95 / integration 112 / model 41 / client 37 / architecture 14 /
 agent 18 / package-shape 10 / resolveMeta 4。跑法见 README §16；其中依赖"本机装了 harness"
 或"本机有会话存储"的少数检查会自行跳过，总数会因此少几条。
 

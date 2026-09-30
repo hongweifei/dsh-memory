@@ -7,7 +7,7 @@
 | 版本 | `0.1.0` |
 | 包名 | `@dsh-external/dsh-memory` |
 | 依据 | 真实 SDK（`@qoder-ai/qoder-agent-sdk@1.0.50`）**＋**安装的 `qodercli` bundle 解码，不是文档推测 |
-| 测试 | **329 项全绿**（`node test/*.test.mjs`）：unit 95 / integration 111 / model 40 / client 37 / architecture 14 / agent 18 / package-shape 10 / resolveMeta 4 |
+| 测试 | **332 项全绿**（`node test/*.test.mjs`）：unit 95 / integration 112 / model 41 / client 37 / architecture 14 / agent 19 / package-shape 10 / resolveMeta 4 |
 | 依赖 | 仅 `@deepseek-ai/schemastery`（提供真正的 `Config` schema）与 `picomatch`（排除规则；Qoder 自己也是这个库） |
 | 设计文档 | [`docs/qoder-memory-model.md`](docs/qoder-memory-model.md)（解出的记忆模型）、[`docs/memory-layers.md`](docs/memory-layers.md)（哪些层归 harness、哪些归本插件） |
 
@@ -92,8 +92,8 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
     generation:
       maxOutputTokens: 0      # 0＝不给回复设上限，用适配器/模型自己的默认值（见下方说明）
       pauseAfterFailures: 3   # 连续失败几次就暂停本会话的生成（Qoder 的 hFl=3）；0＝永不暂停
-      maxWrites: 4            # 单轮最多写几个文件
-      maxWriteBytes: 16384    # 单文件字节上限
+      maxWrites: 4            # 单轮最多写几个文件（索引也算一个）；超出＝延到下一轮，不是失败；0＝不设上限
+      maxWriteBytes: 16384    # 单文件字节上限（写时提示里会写明这个数）；0＝不设上限
       provider: ''            # 留空则用会话自身模型路由
       model: ''
       prompt: ''              # 附加记录策略
@@ -155,12 +155,20 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
 
 **关于 `maxOutputTokens`**：SDK 的 `SerializableMemoryGenerationOptions` 里**没有这个字段**
 （只有 `enabled` / `roots` / `prompt` / `turnComplete`），所以它是本插件自己的旋钮，
-`maxWrites` / `maxWriteBytes` 同理。默认 **0＝不设上限**，让适配器套用模型自己的默认值——
-这是唯一对所有模型都成立的选择：pass 是**用工具调用写文件**的，文件正文就在工具参数里，
-固定小上限会让推理模型在吐出工具调用之前就撞上上限（本插件第一版抄了 Qoder `summarizer-*`
-任务类型的 `2e3`，那适用于摘要，不适用于写作）。要控成本就显式设一个值；上限撞上且那一轮
-没有可用的工具调用时，pass 会失败并**在原因里说清**（`generation reached maxOutputTokens…`）；
-若撞上但工具调用已经完整，那些写入**照常落地**再结束循环。
+`maxWrites` / `maxWriteBytes` 同理。三者都遵循同一个约定：**0＝不设上限**。`maxOutputTokens`
+默认 0，让适配器套用模型自己的默认值——这是唯一对所有模型都成立的选择：pass 是**用工具调用写
+文件**的，文件正文就在工具参数里，固定小上限会让推理模型在吐出工具调用之前就撞上上限（本插件
+第一版抄了 Qoder `summarizer-*` 任务类型的 `2e3`，那适用于摘要，不适用于写作）。要控成本就显式
+设一个值；上限撞上且那一轮没有可用的工具调用时，pass 会失败并**在原因里说清**
+（`generation reached maxOutputTokens…`）；若撞上但工具调用已经完整，那些写入**照常落地**再结束循环。
+
+**单轮写入预算**（`maxWrites` / `maxWriteBytes`）是插件自己的**防跑飞**上限——Qoder 的 SDK 与
+qodercli 都没有这个字段，所以它更要说清楚，否则就成了陷阱：第一版**既没在提示里写明，又把撞线
+记成失败**，于是"一轮写了 4 个、第 5 个被拦"在面板上显示成
+`写入被拒 status.md：at most 4 files may be written per pass`——一轮已经干完的 pass 看起来是坏的。
+现在两半都补齐：**提示里写明预算**（含"索引也算一个"），**超出的写入记为 deferred 而不是失败**
+（`deferredFiles`，状态仍是 `saved`，模型会收到"未被尝试：本轮预算已用完，下一轮从索引继续"），
+`/memory` 用 `deferred:` 单列一行。所以把 `maxWrites` 设小只会让记忆分几轮写完，不会制造"失败"。
 
 ### 环境变量覆写
 

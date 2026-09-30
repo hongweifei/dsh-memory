@@ -10,6 +10,7 @@
 import assert from 'node:assert/strict'
 
 import { createMemoryToolkit, memoryToolSchemas, runMemoryAgent, MAX_AGENT_ROUNDS } from '../lib/memory-agent.js'
+import { perPassBudgetNote } from '../lib/memory-pass.js'
 
 let passed = 0
 const test = async (label, fn) => {
@@ -403,7 +404,11 @@ await test('malformed tool arguments are reported, not thrown', async () => {
   assert.equal(result.isError, true)
 })
 
-await test('the per-pass write ceiling is enforced', async () => {
+await test('a write past the per-pass budget is deferred, not refused', async () => {
+  // Reported live in the panel as `写入被拒 status.md：at most 4 files may be written per pass`
+  // — a pass that had simply finished its budget read as a broken one. The budget is this
+  // plugin's own runaway guard (Qoder states no such cap), so nothing failed: the write was
+  // not attempted, and the next pass continues from the index.
   const fs = makeFs({})
   const narrow = { generation: { ...config.generation, maxWrites: 1 } }
   const llm = makeScriptedLlm([
@@ -417,8 +422,31 @@ await test('the per-pass write ceiling is enforced', async () => {
   const toolkit = createMemoryToolkit(ctxWith(fs, llm), narrow, [ROOT], signal)
   const { outcome } = await runMemoryAgent(ctxWith(fs, llm), narrow, route, 'sys', 'go', toolkit, signal)
   assert.equal(outcome.writtenFiles.length, 1, 'only the first write lands')
-  assert.equal(outcome.status, 'partial', 'the refused write must be reported, not hidden')
-  assert.match(outcome.failedFiles[0].error, /at most 1/)
+  assert.equal(outcome.status, 'saved', 'nothing failed — the budget ran out')
+  assert.deepEqual(outcome.failedFiles, [], 'a deferred write is not a failure')
+  assert.deepEqual(outcome.deferredFiles, [{ rootId: 'user', path: 'b.md', error: perPassBudgetNote(1) }])
+  assert.match(outcome.reason, /per-pass write budget \(1\) is spent/)
+  // The model is told too, so it wraps up instead of retrying the same write.
+  const toolMessages = llm.calls[1].messages.filter((message) => message.role === 'tool')
+  assert.match(toolMessages.at(-1).content[0].text, /not attempted: the per-pass write budget \(1\) is spent/)
+})
+
+await test('a budget of 0 means no cap, so every write lands', async () => {
+  // The README's convention for these knobs is `0 = no cap` (`maxOutputTokens` works that way);
+  // a 0 that forbade every write contradicted it.
+  const fs = makeFs({})
+  const uncapped = { generation: { ...config.generation, maxWrites: 0 } }
+  const calls = ['a.md', 'b.md', 'c.md'].map((path, index) => ({
+    id: `c${index}`,
+    name: 'memory_write',
+    arguments: JSON.stringify({ rootId: 'user', path, content: 'x' }),
+  }))
+  const llm = makeScriptedLlm([{ calls }])
+  const toolkit = createMemoryToolkit(ctxWith(fs, llm), uncapped, [ROOT], signal)
+  const { outcome } = await runMemoryAgent(ctxWith(fs, llm), uncapped, route, 'sys', 'go', toolkit, signal)
+  assert.deepEqual(outcome.writtenFiles.map((file) => file.path), ['a.md', 'b.md', 'c.md'])
+  assert.deepEqual(outcome.deferredFiles, [])
+  assert.equal(outcome.status, 'saved')
 })
 
 await test('deleting removes the file and says to fix the index', async () => {

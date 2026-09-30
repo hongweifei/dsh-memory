@@ -479,6 +479,64 @@ await test('generation writes a plan and reports status saved with writtenFiles'
   assert.match(written[1], /use pnpm/)
 })
 
+await test('a write past the per-pass budget is deferred, and the pass is still a success', async () => {
+  // Reported live in the panel as `写入被拒 status.md：at most 4 files may be written per pass`:
+  // a pass that had merely spent its budget read as a broken one. The budget is the plugin's
+  // own runaway guard (Qoder states no such cap), so a write it stops is deferred, reported,
+  // and continues in the next pass — never counted as a failure.
+  const plan = (count) =>
+    JSON.stringify({
+      writes: Array.from({ length: count }, (_, index) => ({
+        rootId: 'project',
+        path: `note-${index}.md`,
+        content: '# note',
+      })),
+      reason: 'several notes',
+    })
+  const run = async (config, count) => {
+    const fs = makeFs({})
+    const { ctx, listeners, services, commands } = makeCtx(fs, makeLlm(plan(count)))
+    let reported
+    apply(
+      ctx,
+      loadConfig({
+        mode: 'custom',
+        userScope: false,
+        generation: { ...config, turnComplete: { minPromptChars: 1 }, onResult: (result) => (reported = result) },
+      }),
+    )
+    const session = makeSession(turnEvents('a reasonably long prompt to pass the gate', 'ok'), 'C:\\proj')
+    const agent = makeAgent(session)
+    listeners.get('agent/created')[0]({ agent })
+    listeners.get('session/event')[0](session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    await services.get('memory').flushMemory()
+    return { reported, commands }
+  }
+
+  const capped = await run({ maxWrites: 2 }, 3)
+  assert.equal(capped.reported.status, 'saved', 'nothing failed: the budget ran out')
+  assert.deepEqual(capped.reported.failedFiles, [], 'a deferred write is not a failure')
+  assert.deepEqual(
+    capped.reported.writtenFiles.map((file) => file.path),
+    ['note-0.md', 'note-1.md'],
+  )
+  assert.deepEqual(
+    capped.reported.deferredFiles.map((file) => file.path),
+    ['note-2.md'],
+  )
+  assert.match(capped.reported.deferredFiles[0].error, /per-pass write budget \(2\) is spent/)
+  assert.match(capped.reported.reason, /several notes/, "the model's own summary still wins the reason")
+
+  // `/memory` reports the deferral as such, so the CLI report cannot read as a failure either.
+  const report = await runCommand(capped.commands, 'memory', { agent: makeAgent(makeSession([], 'C:\\proj')) })
+  assert.match(report.text, /deferred: project:note-2\.md — the per-pass write budget \(2\) is spent/)
+
+  // `0` means "no cap" for these knobs: the same plan lands whole.
+  const uncapped = await run({ maxWrites: 0 }, 3)
+  assert.equal(uncapped.reported.writtenFiles.length, 3)
+  assert.deepEqual(uncapped.reported.deferredFiles, [])
+})
+
 await test('generation reports no_change when the model writes nothing', async () => {
   const fs = makeFs({})
   const { ctx, listeners, services } = makeCtx(fs, makeLlm('{"writes":[],"reason":"nothing durable"}'))
