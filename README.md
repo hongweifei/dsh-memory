@@ -219,8 +219,21 @@ Qoder 的 `memory` / `memory_get` 在本插件叫 `memory_list` / `memory_read`�
 `workspaceRegistry`；查不到工作区的项目回退成 `projectKey` 目录名，`user` 作用域本来就没有工作区），
 鼠标悬停显示它被寻址的 slug；每行还有「N 个记忆文件」+ 占用大小（宿主没给就**整段省略**，
 不显示 `undefined`、也不用横线占位），文件折叠在行下（`<details>`），展开后每个文件有**打开/删除**；
-预算行 · 活动区（最近生成/消费/巩固 + 告警）· 编辑器（作用域下拉 + 文件名 + 保存/重载/等待）·
+预算行 · **注入预览** · 活动区（最近生成/巩固 + 告警）· 编辑器（作用域下拉 + 文件名 + 保存/重载/等待）·
 命令提示。中英双语，全部用真实 `--dsw-*` 主题 token。
+
+**注入预览**（§9 补）回答的是"我的记忆到底进没进上下文"，而且给的是**下一步的判定**而不是事后清单：
+点一下「预览」，Host 把真实消费跑一遍再**丢掉结果**，返回四件事——`step.action`
+（`silent` 什么都不注入 / `snapshot` 全量 / `delta` 只发变动 / `none`）、原因、本步 token、
+以及新会话会收到的**完整块正文**（默认折叠在 `<details>` 里）。绝大多数步是 `silent`，
+所以只给"完整块"会教出相反的直觉。
+
+**它绝不改变它描述的行为**：不记 `lastConsumption`、不触发 `consumption.onResult`、用一次性的版本
+缓存、**只读不写**那个会话的注入基准。最后一条是硬要求——预览若推进了基准，下一步就会判定"未变"
+而什么都不发，等于看一眼面板就把注入关掉了。`test/integration.test.mjs` 里
+「previewMemory describes the next step without changing it」钉住这条，并且**已验证：把写基准加回去，
+该测试立刻以 `the preview must not have consumed the snapshot` 失败**。
+预览是**按需**的 `GET /api/memory/preview`，不挂在 5 秒一次的 status 轮询上（那会每 5 秒重读整个记忆块）。
 
 两个做不到的地方，如实标注：harness 的 `FsInfo` 只有 `version/type/size`、**没有修改时间**，
 所以显示的是**占用大小**而不是"更新于某时"；harness 也**没有"在文件管理器里打开"的能力**
@@ -380,13 +393,13 @@ harness 的 `fs` 服务**确实没有 delete**（`FileSystem` 抽象类只有 `r
 
 ## 15. 结构、分层与体积预算
 
-一个包，两个半：host `lib/*.js`（25 个模块）＋ `lib/client.js`（设置面板，浏览器产物只能一个文件）。
+一个包，两个半：host `lib/*.js`（26 个模块）＋ `lib/client.js`（设置面板，浏览器产物只能一个文件）。
 
 ```
 0 constants
 1 config · tokens · fs · paths · memory-file
-2 render · memory-pass · memory-prompt · memory-search · imports · excludes · trust · jit · transcript
-3 memory-agent
+2 render · memory-pass · memory-prompt · memory-search · imports · excludes · trust · jit · transcript · failure-pause
+3 memory-agent · consumption-plan
 4 consumption · generation · dream
 5 service · tools · routes · commands
 6 index
@@ -394,7 +407,14 @@ harness 的 `fs` 服务**确实没有 delete**（`FileSystem` 抽象类只有 `r
 
 只许向下、无环，且**只有 `index.js`** 可以引用 presentation 层——`test/architecture.test.mjs` 强制。
 体积：host 模块逻辑 ≤500 行；`client.js` ≤560 逻辑 **且** ≤220 行内联数据（两份词典 + 样式表）；
-`index.js` ≤300。**当前 `client.js` 两项都用满（559/560、220/220）**，下次动面板必须先腾地方，不抬上限。
+`index.js` ≤300。**当前 `client.js` 两项都用满（560/560、220/220）**，下次动面板必须先腾地方，不抬上限
+——注入预览就是这样加进来的：它取代了「最近一次消费」那行事后清单，压缩了 `qualityNotices` 里重复的
+`note`+`push`，把命令列表从独立一节并进标题行，正文用 `<details>` 折叠，**没有动上限一个字**。
+
+`consumption-plan.js` 单独存在是有原因的：面板要能回答「下一步会注入什么」而**不真的回答它**。
+决策被写成纯函数（`baselineFor` / `planInjection`），两个调用方只差一件事——真实投影**应用并记录**
+结果，面板预览**只读不写**。每个会话的注入基准也放在这里（`readConsumptionState` / `writeConsumptionState`），
+读写分开就是那道闸：只有真实投影会写。
 
 ## 16. 测试与验证
 

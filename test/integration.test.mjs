@@ -921,6 +921,7 @@ await test('every route declares methods and a buffered body', async () => {
   assert.deepEqual([...routes.keys()].sort(), [
     '/api/memory/file',
     '/api/memory/flush',
+    '/api/memory/preview',
     '/api/memory/refresh',
     '/api/memory/status',
     '/api/memory/trust',
@@ -1216,6 +1217,96 @@ await test('refreshMemory injects a fresh memory message', async () => {
   assert.equal(agent.injected.length, 1)
   assert.equal(agent.injected[0].source.kind, 'memory')
   assert.match(agent.injected[0].content[0].text, /refreshable knowledge/)
+})
+
+await test('previewMemory describes the next step without changing it', async () => {
+  // The whole point of previewing through a plan instead of a stored result: a
+  // panel action must not consume the change it is describing. If the preview
+  // advanced the live baseline, the step AFTER it would find "unchanged" and
+  // inject nothing — looking at the panel would silently disable injection.
+  const fs = makeFs({ [USER_MEMORY]: 'previewable knowledge' })
+  const { ctx, listeners, services } = makeCtx(fs, makeLlm('{}'))
+  const injectedResults = []
+  apply(
+    ctx,
+    loadConfig({
+      mode: 'custom',
+      userScope: true,
+      generation: { turnComplete: { enabled: false } },
+      consumption: { onResult: (result) => injectedResults.push(result) },
+    }),
+  )
+  const service = services.get('memory')
+  const session = makeSession([], 'C:\\proj')
+  const agent = makeAgent(session)
+
+  // A fresh session: the preview must say "snapshot", and must show the block.
+  const first = await service.previewMemory(agent)
+  assert.equal(first.available, true, `preview unavailable: ${first.reason}`)
+  assert.equal(first.step.action, 'snapshot', 'a session with no baseline receives a snapshot')
+  assert.match(first.snapshot.text, /previewable knowledge/)
+  assert.ok(first.snapshot.tokens > 0)
+  assert.ok(first.step.text, 'the snapshot is what this step would send, so it carries the text')
+
+  // Nothing was recorded and nothing was injected by the preview itself.
+  assert.equal(injectedResults.length, 0, 'a preview must never fire consumption.onResult')
+  assert.equal(agent.injected.length, 0, 'a preview must never inject into the session')
+
+  // The real step still injects the snapshot exactly as previewed.
+  const decision = await runPreStep(listeners, agent)
+  assert.equal(decision.messages.length, 1, 'the preview must not have consumed the snapshot')
+  assert.equal(decision.messages[0].content[0].text, first.step.text, 'the step sends what the preview showed')
+  assert.equal(injectedResults.length, 1, 'the real load reports once')
+
+  // Now the session has a baseline: the next preview must say "silent" — and the
+  // step after it must still be silent, i.e. the preview did not use it up.
+  const second = await service.previewMemory(agent)
+  assert.equal(second.step.action, 'silent', 'an unchanged session injects nothing')
+  assert.equal(second.step.text, undefined, 'a silent step sends no text')
+  const afterPreview = await runPreStep(listeners, agent)
+  assert.equal(afterPreview.messages.length, 0, 'the preview consumed nothing')
+  assert.equal(injectedResults.length, 1, 'a silent step reports nothing')
+
+  // The preview is not merely inert — it tracks a real change. Editing memory
+  // must make the NEXT preview a delta, and the next step must emit it.
+  fs.touch(USER_MEMORY, 'changed knowledge')
+  const third = await service.previewMemory(agent)
+  assert.equal(third.step.action, 'delta', 'a changed file turns the next step into a delta')
+  assert.deepEqual(third.step.changed, ['user:MEMORY.md'])
+  assert.match(third.step.text, /changed knowledge/)
+  const deltaDecision = await runPreStep(listeners, agent)
+  assert.equal(deltaDecision.messages.length, 1, 'the delta the preview showed is really sent')
+  assert.equal(deltaDecision.messages[0].content[0].text, third.step.text)
+})
+
+await test('previewMemory reports a changed config as a fresh snapshot, and unavailability honestly', async () => {
+  const fs = makeFs({ [USER_MEMORY]: 'knowledge' })
+  const { ctx, listeners, services } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, loadConfig({
+    mode: 'custom',
+    userScope: true,
+    generation: { turnComplete: { enabled: false } },
+  }))
+  const service = services.get('memory')
+  const agent = makeAgent(makeSession([], 'C:\\proj'))
+  await runPreStep(listeners, agent)
+
+  // A preview with no session cannot answer: it has no cwd, no roots and no
+  // baseline, so it says so rather than inventing a block for nobody.
+  const orphan = await service.previewMemory(undefined)
+  assert.equal(orphan.available, false)
+  assert.match(orphan.reason, /no session/)
+
+  // Consumption disabled is its own reason, not an empty preview.
+  const off = makeCtx(makeFs({}), makeLlm('{}'))
+  apply(off.ctx, loadConfig({
+    mode: 'custom',
+    generation: { turnComplete: { enabled: false } },
+    consumption: { enabled: false },
+  }))
+  const disabled = await off.services.get('memory').previewMemory(makeAgent(makeSession([], 'C:\\proj')))
+  assert.equal(disabled.available, false)
+  assert.match(disabled.reason, /consumption is disabled/)
 })
 
 await test('a generation onResult sees its own result through ctx.memory.status()', async () => {

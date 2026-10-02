@@ -301,10 +301,15 @@ await test('the panel renders the full status, scopes, budget, and activity', as
   // a spent output budget went unnoticed.
   assert.match(text, /Generation output cap \(0 = model default\)\n<span>0\n/)
   assert.match(text, /Pause after N consecutive failures \(0 = never\)\n<span>3\n/)
-  // Latest activity, including per-file consumption status.
+  // Latest activity. The per-file consumption list used to live here as an
+  // AFTER-THE-FACT row; the injection preview replaced it, because "what will be
+  // injected next" answers the same question before it is asked and can say why.
   assert.match(text, /saved \(turn 3\)/)
-  assert.match(text, /user:MEMORY\.md \(loaded\)/)
-  assert.match(text, /project:MEMORY\.md \(missing\)/)
+  assert.match(text, /Last consolidation/)
+  // The preview offers to run, and while it has not been run it says what it is.
+  assert.match(text, /<button>Preview\n/)
+  assert.match(text, /What the next step actually sends/)
+  assert.doesNotMatch(text, /Last consumption/, 'the after-the-fact row must be gone, not duplicated')
   // Editor controls.
   assert.match(text, /Edit memory file/)
   assert.match(text, /<textarea>/)
@@ -962,7 +967,7 @@ await test('no user-visible string is hardcoded in the component body', () => {
 await test('the panel talks only to the /api/memory routes', () => {
   const paths = [...source.matchAll(/['"](\/api\/memory\/[a-z]+)/g)].map((match) => match[1])
   assert.ok(paths.length > 0)
-  const known = ['/api/memory/status', '/api/memory/file', '/api/memory/refresh', '/api/memory/flush', '/api/memory/trust']
+  const known = ['/api/memory/status', '/api/memory/file', '/api/memory/preview', '/api/memory/refresh', '/api/memory/flush', '/api/memory/trust']
   for (const path of paths) {
     assert.ok(known.includes(path), `unexpected route ${path}`)
   }

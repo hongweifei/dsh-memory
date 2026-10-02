@@ -70,6 +70,16 @@
   `failureMode` 的标签直接带枚举含义（`truncate | fail_query`、`best_effort | fail_query`），
   并补上生成侧的两个旋钮（输出上限 `0 = 模型默认`、连续失败暂停阈值 `0 = 永不`）。
   原先只显示一半的 token 故事，正是"输出预算被烧光却没人发现"的土壤。
+- **注入预览**（`GET /api/memory/preview` + `ctx.memory.previewMemory()`）：回答"我写的记忆到底进没进
+  上下文"。给的是**下一步的判定**（`silent` 什么都不注入 / `snapshot` 全量 / `delta` 只发变动 /
+  `none`）、本步 token、变动的文件，以及新会话会收到的**完整块正文**（折叠在 `<details>` 里）。
+  取代了原来那行**事后**的「最近一次消费」清单——同一个问题，事前回答才解释得清"为什么没进"。
+  **它绝不改变它描述的行为**：不记 `lastConsumption`、不触发 `onResult`、用一次性版本缓存、
+  **只读不写**该会话的注入基准（预览若推进基准，下一步就会判定"未变"而停发，等于看一眼面板
+  就把注入关掉了）。按需触发，**不挂**在 5 秒一次的 status 轮询上。为此把
+  "给定基准该注入什么"抽成纯函数模块 `lib/consumption-plan.js`，真实投影与预览只差"应用与否"。
+  测试 `previewMemory describes the next step without changing it` 钉住这条，并已用负控验证：
+  把写基准加回去，测试立刻以 `the preview must not have consumed the snapshot` 失败。
 - **作用域区是一行一个作用域的列表**：**标题是工作区名字**（`EasyGit` 而不是
   `--D-Projects-EasyGit--`；用 `workspaceRegistry` 的路径**正向**算出 slug 来配对——slug 有损、
   反推不出路径，所以只有这个方向可行；查不到工作区的项目回退成 slug，`user` 作用域本来就没有），
@@ -286,6 +296,8 @@ agent 18 / package-shape 10 / resolveMeta 4。跑法见 README §16；其中依�
 - 两处提示词片段解不出（运行时插值的行数上限 `⟨lines⟩`、缺了开头从句的
   "…under about 25KB"），**就地声明**而不是编造。
 - 索引约束**只报告不阻止**（原实现也只在提示词里说）。
-- `client.js` 体积预算**两项都用满**（逻辑 559/560、内联数据 220/220）：下次动面板必须先腾地方。
+- `client.js` 体积预算**两项都用满**：注入预览就是在"不抬上限"的前提下挤进去的——取代了那行事后
+  消费清单、压掉 `qualityNotices` 里重复的 `note`+`push`、把命令列表并进标题行、正文折叠。
+  下次动面板仍必须先腾地方（当前 560/560、220/220）。
 - 删除的沙箱代价：插件自己的 `node:fs` 调用不被 confining 后端拦截，所以只读后端是**主动拒绝**。
 - `projectKey` 有损：`D:\a-b` 与 `D:\a\b` 共用一个记忆目录——harness 自己的取舍，本插件继承。
