@@ -312,6 +312,17 @@ Qoder 的判定逐字解出：`isTrustedFolder(){return !this.folderTrust || (th
 - **变了 ⇒ 增量**：只发哈希变动的文件（`form: 'notice'`，带 `Removed:` 行），**从不发快照**。
 - **续接可用**：`blockHash` 与逐文件哈希挂在消息 `source` 上，新进程从落盘消息恢复比较基准。
 
+**`sections` 里放的是模型读到的正文，不是占位符**（`form: 'snapshot'` 时）。这不是可选的美化：
+Trajectory 视图不读 `sections`（它渲染 `inputDetail`，也就是整段正文），但 **Chat 视图的
+`snapshot` 形态只渲染 `sections`、完全不渲染 `content`**——`text` 若是空串，那一行在 Chat 里就只剩
+「此快照取代先前快照」加一串文件名，**模型读到 4000 多字符、读者看到 0**，注入恰好在最该能核对的地方
+失去可审计性。宿主自己的生产者都成对写入（`time-context` 的 invariant 甚至断言 `section.text` 必须
+等于模型读到的字节），本插件原先只写空串是错的。
+
+代价是这份文本在落盘消息里存两份（`content` 给模型、`sections` 给渲染）。按本机真实日志实测：203 次
+snapshot 注入、内容合计 88 万字符，占 171 MB 压缩日志的 **0.49%**（未压缩），且重复内容 zstd 之后
+几乎不增加体积；单次上限仍受同一个 `consumption.maxTokens` 约束。
+
 ## 10. `@` 导入
 
 语法（逐字）：`@./x.md`、`@../x.md`、`@~/x.md`、`@/abs.md`、`@x.md`（带扩展名）；

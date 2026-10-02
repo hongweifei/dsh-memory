@@ -350,15 +350,53 @@ test('missing writes defaults to an empty array', () => {
 
 /* ================= message identity ================= */
 
-test('memory message declares snapshot form with named sections', () => {
+test('memory message declares snapshot form with named sections carrying the text', () => {
+  // A `snapshot` reader renders the SECTIONS and nothing else: an empty
+  // `section.text` makes the whole injection invisible there even though the
+  // model reads it (the harness's own time-context puts the same text in both,
+  // and its invariant asserts exactly that).
   const message = memoryMessage({ text: 'body', included: ['user:MEMORY.md'] }, 'identity-1')
   assert.equal(message.role, 'user')
   assert.equal(message.source.kind, 'memory')
   assert.equal(message.source.form, 'snapshot')
   assert.equal(message.source.identity, 'identity-1')
+  // No `sections` on the result: the fallback keeps the shape valid (names only).
   assert.deepEqual(message.source.sections, [{ name: 'user:MEMORY.md', text: '' }])
   assert.equal(message.content[0].text, 'body')
   assert.ok(isMemoryMessage(message))
+})
+
+test('a snapshot sections list carries the model-facing text, not a placeholder', () => {
+  const measure = (messages) =>
+    messages.reduce((total, message) => total + Math.ceil(JSON.stringify(message).length / 4), 0)
+  const rendered = renderMemoryContext(
+    [
+      { id: 'user:MEMORY.md', path: 'C:\\u\\MEMORY.md', text: 'remember the build command' },
+      { id: 'project:notes.md', path: 'C:\\p\\notes.md', text: 'tests must hit a real database' },
+    ],
+    5000,
+    measure,
+  )
+  const message = memoryMessage(rendered, 'identity-1', { form: 'snapshot' })
+  assert.deepEqual(
+    message.source.sections.map((section) => section.name),
+    ['user:MEMORY.md', 'project:notes.md'],
+  )
+  for (const section of message.source.sections) {
+    assert.ok(section.text.length > 0, `section ${section.name} must carry its text`)
+  }
+  const joined = message.source.sections.map((section) => section.text).join('\n')
+  assert.match(joined, /remember the build command/)
+  assert.match(joined, /tests must hit a real database/)
+  // The section text is the model-facing bytes for that name — not the heading,
+  // which a reader derives from the name itself.
+  assert.ok(!joined.includes('## Memory from:'), 'the heading belongs to the name, not the body')
+  // A delta is a `notice`: it renders the content, and the durable contract
+  // rejects sections on any other form.
+  const delta = memoryMessage({ text: 'changed', included: ['user:MEMORY.md'] }, 'identity-1', { form: 'delta' })
+  assert.equal(delta.source.form, 'notice')
+  assert.equal(delta.source.sections, undefined)
+  assert.equal(typeof delta.source.summary, 'string')
 })
 
 test('ordinary user message is not a memory message', () => {
