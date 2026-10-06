@@ -43,10 +43,10 @@ for (const [name, source] of sources) {
 const LAYERS = [
   ['constants.js'],
   ['config.js', 'tokens.js', 'fs.js', 'paths.js', 'memory-file.js'],
-  ['render.js', 'memory-pass.js', 'memory-prompt.js', 'memory-search.js', 'imports.js', 'excludes.js', 'trust.js', 'jit.js', 'transcript.js', 'failure-pause.js'],
+  ['render.js', 'memory-pass.js', 'memory-prompt.js', 'memory-search.js', 'imports.js', 'excludes.js', 'trust.js', 'jit.js', 'transcript.js', 'failure-pause.js', 'memory-switch.js'],
   ['memory-agent.js', 'consumption-plan.js'],
   ['consumption.js', 'generation.js', 'dream.js'],
-  ['service.js', 'tools.js', 'routes.js', 'commands.js'],
+  ['service.js', 'tools.js', 'routes.js', 'commands.js', 'consumption-seam.js'],
   ['index.js'],
 ]
 const layerOf = new Map()
@@ -144,7 +144,7 @@ test('imports only point downward through the layers', () => {
 })
 
 test('index.js is the only module that imports the presentation layers', () => {
-  const presentation = ['service.js', 'tools.js', 'routes.js', 'commands.js']
+  const presentation = ['service.js', 'tools.js', 'routes.js', 'commands.js', 'consumption-seam.js']
   for (const [name, targets] of graph) {
     if (name === 'index.js') continue
     for (const target of targets) {

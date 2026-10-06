@@ -20,6 +20,18 @@
 
 ### 新增
 
+**会话级开关**（`/memory-switch`、面板一行一个会话、`POST /api/memory/switch`）
+
+- 某些会话不该被记忆影响。配置的 `enabled` 是全局的，所以补一把**按会话**的开关：
+  关掉后该会话**两半一起停**——不注入（连记忆文件都不读）、不记录（后台 pass、轮内 pass、dream 全跳过），
+  已排队的注入消息一并移除，`memory` 工具的写入被拒并说明原因（**读取照旧**）。
+- 静音存在 `<DSH_HOME>/memory-off-sessions.json`，**不是**会话日志：插件事件不在 harness 的类型表里，
+  `session.append` 会丢掉 `data`、读取端随后**拒收整个日志**。存的是"静音"而非"许可"，
+  所以文件丢失/损坏只会让静音被遗忘，不会让记忆到处静默。
+- 按会话 id 记：续接保留静音，子代理**不继承**父会话的静音。
+- 面板只能**枚举**活会话再指名切换，因为 HTTP 请求路径上**没有 initiator 边界**，
+  路由解析不出"当前会话"；指到不存在的 id 明确拒绝（409），不偷偷回退。
+
 **两个半，可独立配置**
 
 - **生成半**：一轮结束后（或 `incremental.midTurn` 下的回合进行中）跑一个后台 pass。
@@ -229,6 +241,11 @@ false: 0 | false | no  | off              // 其他值一律当"未设置"
 - **`ReferenceError` 被 `catch` 吞掉**（`changeFields` 用了没解构的字段）→ 面板静默无输出；集成测试当场抓住。
 - **删除的两处**：越 root 的删除被拒并记入 `failedFiles`；删除算一次**尝试**（两次被拒是 `failed` 而非 `no_change`）。
 - **索引告警**：超限内容**仍然落盘**，只报告（与"advisory"的字面一致）。
+- **`GET /api/memory/preview` 只要会话在作用域内就返回 500**：路由把**会话**传给了
+  `previewMemory(agent)`，于是 `target.session` 是 `undefined`，`visibleMemoryState(undefined, …)`
+  抛 `Cannot read properties of undefined (reading 'surface')`，被路由的 catch 收成 500。
+  之所以长期没被发现，是因为面板的渲染夹具**喂的是写死的 payload**，从未真的调过那条路由；
+  现在有一条集成测试直接调它并断言 200 + 真实快照。
 
 ### 兼容性（核对过 harness `0.2.0-rc.2`）
 

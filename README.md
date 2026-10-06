@@ -205,6 +205,7 @@ Qoder 的 `memory` / `memory_get` 在本插件叫 `memory_list` / `memory_read`�
 | 命令 | 作用 |
 |---|---|
 | `/memory` | 状态：作用域、信任判定、最近一次生成/消费、变更与告警明细 |
+| `/memory-switch [on\|off\|status]` | **会话级总开关**（见 §20）：关掉后该会话既不注入、也不记录 |
 | `/memory-trust [allow\|deny\|list] [folder]` | 目录信任（写入 `<DSH_HOME>/trusted-folders.json`） |
 | `/memory-imports [status\|allow\|deny]` | **会话级**外部导入授权（授权后立即重新加载） |
 | `/memory-delete <scope>:<path>` | 删除一个记忆文件 |
@@ -214,7 +215,7 @@ Qoder 的 `memory` / `memory_get` 在本插件叫 `memory_list` / `memory_read`�
 
 ### 设置面板
 
-状态行（插件/模式/生成/消费/巩固/闸门/**信任＋授权按钮**/在飞任务）· **作用域区**：
+状态行（插件/模式/生成/消费/巩固/闸门/**信任＋授权按钮**/**会话开关**/在飞任务）· **作用域区**：
 `user` 加**每个有记忆的项目**，**一行一个作用域**，标题写**工作区名字**（如 `EasyGit`，来自
 `workspaceRegistry`；查不到工作区的项目回退成 `projectKey` 目录名，`user` 作用域本来就没有工作区），
 鼠标悬停显示它被寻址的 slug；每行还有「N 个记忆文件」+ 占用大小（宿主没给就**整段省略**，
@@ -500,3 +501,46 @@ node test/harness-env.mjs         # 不是测试：定位 harness 与安装位�
 **更旧的 npm 安装**（本机就是 `0.1.7-rc.2` 对 `0.2.0-rc.2`）。于是"测试全绿"可能验的是旧版本——
 这正是升级能被漏掉的方式。`test/harness-env.mjs` 因此优先找**正在运行**的那份
 （可用 `DSH_HARNESS_BUNDLE` 显式指定），找不到就跳过并说明。
+
+## 20. 会话级开关（`/memory-switch`、面板）
+
+**为什么要有**：有些会话就是不该被记忆影响——一次性的试验、排障、或一段不想留下痕迹的对话。配置里的
+`enabled` 是**全局**的，关掉就把整台机器都关了，所以需要一把**按会话**的开关。
+
+**两半一起关，不是两把开关**。关掉后该会话：
+- **不注入**任何记忆（`agent/pre-step` 在跑消费之前就问开关，所以**一个记忆文件都不会读**）；
+- **不记录**（`turn/end` 的后台 pass、轮内 pass、以及 dream 全部跳过）；
+- **已排队**的记忆消息会被**移除**——切换前注入的那条如果留着，就是躺在读者自己队列里的一句谎话；
+- **写入被拒**（`memory` 工具的 `write`/`delete` 报出原因），但**读取照旧**：问记忆一个问题，不等于让记忆影响这个会话；
+- **`/memory-refresh` 明说原因**，而不是伪装成"没有东西可注入"——这两种情况的解法不同，只有一种是 bug。
+
+**开关存在哪，是被 harness 逼出来的选择**：
+
+| 载体 | 能不能用 | 原因 |
+|---|---|---|
+| 会话日志（`session.append`） | **不能** | 插件事件不在 harness 自己的类型表里，落盘时 `data` 会被丢掉，读取端随后**拒收整个日志**（`session event "…" at seq N has an invalid event envelope`），直接卡住会话重开。逃生舱是信封上的 `ignorable` 标记，而**只有 harness 自己**会设它。 |
+| `<DSH_HOME>/memory-off-sessions.json` | **用它** | 和 `trusted-folders.json`、`dream-state.json` 同一类东西：**关于会话的插件状态**，不是记忆，永不注入。它在所有记忆根之外，而且是 `.json`（根目录只收 `*.md`），所以也不会被当成内容读进来。 |
+| 只放内存 | 不够 | 重启后静音就丢了；而"静音被遗忘"必须好过"记忆在没人知道的情况下全静音了"。 |
+
+**存的是"静音"，不是"许可"**：文件里只列**被关掉的**会话。文件丢了、坏了、从来没有过 ⇒ 一切照常。
+失败方向因此是"静音被忘了"，而不是"记忆到处都不出声且没人看得出为什么"。
+
+**按会话 id 记，所以**：续接（resume）保留 id ⇒ 静音跟着走；子代理有**自己的** id ⇒ 不会继承父会话的静音
+（继承了就等于让一次委派静悄悄地不留记忆）。
+
+**面板为什么是"一行一个会话"而不是一个"本会话"开关**：**路由拿不到"当前会话"**。HTTP 请求路径上
+**没有任何地方建立 initiator 边界**（`withInitiator` 全仓库只有 agent loop 的 `kick()` 用），所以
+`agents.currentInitiator()` 在路由里是 `undefined`。于是面板只能由 `agents.list()` **枚举**出每个活会话，
+再**指名**切换——`POST /api/memory/switch` 的 `session` 字段是必需的，指到不存在的 id 会**明确拒绝**
+（409），而不是悄悄回退到"碰巧在跑的那个会话"。同一个理由解释了为什么 `/memory-switch` 命令能省略会话：
+它有 initiator。
+
+**`/memory-switch on` 不会自己重新注入**：下一步会发现块没变而保持沉默——这是对的，但看起来像什么都没发生，
+所以命令会直说，并指出 `/memory-refresh` 可以强制拉一次。
+
+**顺带修掉的一个真 bug**：`GET /api/memory/preview` 把**会话**传给了 `previewMemory(agent)`，于是
+`target.session` 是 `undefined`、`visibleMemoryState(undefined, …)` 抛
+`Cannot read properties of undefined (reading 'surface')`，被路由的 catch 收成 **HTTP 500**——只要会话在
+作用域内，面板的"注入预览"就是坏的。之所以一直没被发现，是因为面板的渲染夹具**喂的是写死的 payload**，
+从来没有真的走过那条路由（现在有一条集成测试真的调它）。
+

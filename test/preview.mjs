@@ -39,6 +39,13 @@ const STATUS = {
   },
   largeFileLimit: 40000,
   pendingGenerations: 1,
+  // The session switch: the Host enumerates every live session and its state, because a
+  // route cannot resolve "the current session" (no HTTP path establishes an initiator).
+  sessions: [
+    { id: 'session-3f2a91c4-0b7e', cwd: 'D:\\code\\demo', off: false },
+    { id: 'session-8d10e5aa-46c2', cwd: 'D:\\code\\playground', off: true },
+  ],
+  memorySwitch: { available: true },
   lastGeneration: { status: 'saved', turnIndex: 4, writtenFiles: [], failedFiles: [] },
   lastConsumption: {
     status: 'success',

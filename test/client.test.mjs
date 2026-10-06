@@ -191,10 +191,21 @@ const STATUS = {
   maxOutputTokens: 0,
   pauseAfterFailures: 3,
   gate: { kind: 'minPromptChars', minPromptChars: 40 },
+  // The real status route always sends these; a fixture missing one renders "undefined"
+  // and reads like a product bug (this exact trap was paid for once already).
+  writePolicy: 'memory-root',
+  projectFolder: { cwd: 'C:\\proj', source: 'session' },
   trust: { enabled: true, trusted: true, folder: 'C:\\proj', declared: [], remembered: [], folders: [] },
   memoryChange: { fileCount: 2 },
   largeFileLimit: 40000,
   pendingGenerations: 2,
+  // The session switch: the Host enumerates the live sessions and each one's state,
+  // because a route cannot resolve "the current session".
+  sessions: [
+    { id: 'session-aaaa', cwd: 'C:\\proj', off: false },
+    { id: 'session-bbbb', cwd: 'C:\\proj-two', off: true },
+  ],
+  memorySwitch: { available: true },
   lastGeneration: { status: 'saved', turnIndex: 3, writtenFiles: [], failedFiles: [] },
   lastDream: { status: 'saved', reason: 'merged duplicates' },
   lastConsumption: {
@@ -449,28 +460,25 @@ await test('every English key has a Chinese translation (no untranslated string)
   assert.deepEqual(extra, [], `Chinese dictionary has keys English lacks: ${extra.join(', ')}`)
 
   /**
-   * Identifiers, not prose: these stay identical by design. A config key name,
-   * a literal filename, and slash-command names must not be translated, or the
-   * UI would stop matching what the user types and what the config accepts.
+   * Identifiers, not prose: these stay identical by design, because translating
+   * them would stop the UI matching what the user types. Each one is pinned to the
+   * SHAPE it is allowed to have, so this list cannot hide real prose.
    */
-  const IDENTIFIERS = new Set([
-    'gateBuiltin', // `minPromptChars={minPromptChars}` — a config field name
-    'filenamePlaceholder', // `MEMORY.md` — a real file name
-    'commandConfig', // `/memory`
-    'commandRefresh', // `/memory-refresh`
-    'commandFlush', // `/memory-flush`
-    'commandDelete', // `/memory-delete`
-    'commandTrust', // `/memory-trust`
-    'commandResume', // `/memory-resume`
+  const IDENTIFIERS = new Map([
+    ['gateBuiltin', /^minPromptChars=\{minPromptChars\}$/], // a config field name
+    ['filenamePlaceholder', /^MEMORY\.md$/], // a real file name
+    // The command list: only slash-command names, separated by `·`. Pinned this
+    // tightly because it is the one identifier that carries punctuation.
+    ['commands', /^\/[\w-]+(?: · \/[\w-]+)*$/],
   ])
   const untranslated = Object.keys(zh).filter(
     (key) => !IDENTIFIERS.has(key) && zh[key] === en[key] && /[a-zA-Z]{4,}/.test(en[key]),
   )
   assert.deepEqual(untranslated, [], `these keys are still English: ${untranslated.join(', ')}`)
   // Every identifier must still be one, so this list cannot hide real prose.
-  for (const key of IDENTIFIERS) {
+  for (const [key, shape] of IDENTIFIERS) {
     assert.ok(key in en, `${key} is allowlisted but missing from the English dictionary`)
-    assert.match(en[key], /^[A-Za-z0-9_./{}=\-]+$/, `${key} is allowlisted as an identifier but reads as prose`)
+    assert.match(en[key], shape, `${key} is allowlisted as an identifier but reads as prose`)
   }
 })
 
@@ -493,13 +501,17 @@ await test('the trust row states the decision, not just the switch', async () =>
   const trusted = await renderWithStatus(STATUS)
   assert.match(trusted.text, /Folder trust\n<span><span>trusted/)
   assert.match(trusted.json, /"data-tone":"success"/)
-  assert.ok(!trusted.json.includes('"data-tone":"warning"'), 'a trusted folder must not warn')
+  // Scoped to the trust row: the session switch has rows of its own, and a muted
+  // session draws a warning tone there (see the switch test below).
+  assert.match(trusted.text, /Folder trust\n<span><span>trusted[\s\S]*?<button>Stop trusting/)
   // A trusted folder offers to revoke, and names the folder it means.
   assert.match(trusted.text, /Stop trusting/)
   assert.match(trusted.text, /C:\\proj/)
 
   const untrustedStatus = {
     ...STATUS,
+    // No sessions, so the only warning tone on the page is the trust row's.
+    sessions: [],
     trust: { enabled: true, trusted: false, folder: 'C:\\proj', declared: [], remembered: [], folders: [] },
   }
   const untrusted = await renderWithStatus(untrustedStatus)
@@ -536,6 +548,48 @@ await test('the trust button posts the decision and reloads', async () => {
   assert.ok(trustCall, `the button must call the trust route (saw ${calls.join(', ')})`)
   // And the panel reloads its status afterwards, so the row reflects the decision.
   assert.ok(calls.filter((url) => url.includes('/status')).length >= 2)
+})
+
+await test('the session switch is a row per live session, with its own state and button', async () => {
+  const { text, json } = await renderWithStatus(STATUS)
+  // The hint explains what the switch does, because "off" alone is ambiguous.
+  assert.match(text, /One switch per session, both halves at once/)
+  // One row per session, labelled by the id the Host acts on.
+  assert.match(text, /session-aaaa/)
+  assert.match(text, /session-bbbb/)
+  // Each row states its own decision instead of relying on the button's verb.
+  const onOff = json.match(/"data-tone":"(success|warning)"/g) || []
+  assert.ok(onOff.length >= 2, 'the rows must draw a tone per session')
+  // The button offers the OPPOSITE of the current state, per row, and the id is what
+  // the row is addressed by — so it is rendered, not hidden.
+  assert.match(text, /<span>session-aaaa\n<span><span>on\n<button>Turn off/)
+  assert.match(text, /<span>session-bbbb\n<span><span>off\n<button>Turn on/)
+})
+
+await test('the session switch posts the named session, and reloads', async () => {
+  const calls = []
+  const { renderer } = await renderWithStatus(STATUS, 'en', { keep: true, calls })
+  const buttons = renderer.root.findAll(
+    (node) => node.type === 'button' && collectText(node.props.children).trim() === 'Turn off',
+  )
+  assert.equal(buttons.length, 1, 'the only ON session offers to turn off')
+  await act(async () => {
+    buttons[0].props.onClick()
+    await Promise.resolve()
+  })
+  renderer.unmount()
+
+  const switchCall = calls.find((url) => url.includes('/api/memory/switch'))
+  assert.ok(switchCall, `the button must call the switch route (saw ${calls.join(', ')})`)
+  assert.ok(calls.filter((url) => url.includes('/status')).length >= 2, 'and reload the status')
+})
+
+await test('the switch row carries no state when the Host sends none', async () => {
+  // An older Host (or a profile with `connection` but no `agents`) sends no `sessions`:
+  // the section must degrade to the hint, not render `undefined` rows.
+  const { text } = await renderWithStatus({ ...STATUS, sessions: undefined })
+  assert.match(text, /One switch per session/)
+  assert.doesNotMatch(text, /undefined/)
 })
 
 await test('the panel explains a jit-skipped file and an index warning', async () => {
@@ -600,7 +654,9 @@ await test('the panel says which sandbox policy memory writes declare', async ()
 
 await test('a read-write scope offers delete per file, and a read-only one does not', async () => {
   const calls = []
-  const { text, renderer } = await renderWithStatus(STATUS, 'en', { keep: true, calls })
+  // No sessions in the fixture: this test is about the SCOPE list's rows, and the
+  // session switch deliberately reuses the same `dshmem-file`/`dshmem-actions` classes.
+  const { text, renderer } = await renderWithStatus({ ...STATUS, sessions: [] }, 'en', { keep: true, calls })
   // Two files in the read-write user scope, none in the read-only project scope.
   assert.equal((text.match(/Delete/g) || []).length, 2, 'one delete per file in the writable scope')
   // Counted by button text: the scope row has no buttons of its own.
@@ -967,7 +1023,7 @@ await test('no user-visible string is hardcoded in the component body', () => {
 await test('the panel talks only to the /api/memory routes', () => {
   const paths = [...source.matchAll(/['"](\/api\/memory\/[a-z]+)/g)].map((match) => match[1])
   assert.ok(paths.length > 0)
-  const known = ['/api/memory/status', '/api/memory/file', '/api/memory/preview', '/api/memory/refresh', '/api/memory/flush', '/api/memory/trust']
+  const known = ['/api/memory/status', '/api/memory/file', '/api/memory/preview', '/api/memory/refresh', '/api/memory/flush', '/api/memory/trust', '/api/memory/switch']
   for (const path of paths) {
     assert.ok(known.includes(path), `unexpected route ${path}`)
   }

@@ -54,6 +54,10 @@ import {
   readBooleanEnv,
   turnIntervalAllows,
   collectTranscript,
+  MEMORY_SWITCH_FILE,
+  memorySwitchStorePath,
+  parseMemoryOffSessions,
+  serializeMemoryOffSessions,
 } from '../lib/index.js'
 
 let passed = 0
@@ -1251,6 +1255,58 @@ test('following the session resolves THAT session, not the deployment default', 
 test('resolveMemoryConfig defaults the write policy to the memory root', () => {
   const resolved = resolveMemoryConfig(accepted({}))
   assert.equal(resolved.writePolicy, 'memory-root')
+})
+
+/* ---------------- the per-session switch store ---------------- */
+
+test('the switch store lives under the harness home, beside the other plugin stores', () => {
+  // Outside every memory root, like the trust store and the dream state: a switch is
+  // not memory, and it must never be injected. It is also a `.json`, and a root listing
+  // only ever takes `*.md`, so it cannot be picked up as content by accident either.
+  const previous = process.env.DSH_HOME
+  process.env.DSH_HOME = join('C:', 'home', '.dsh')
+  try {
+    assert.equal(memorySwitchStorePath(), join('C:', 'home', '.dsh', MEMORY_SWITCH_FILE))
+    assert.equal(MEMORY_SWITCH_FILE, 'memory-off-sessions.json')
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previous
+  }
+})
+
+test('the switch store round-trips a session list', () => {
+  const ids = ['session-1', 'session-2']
+  const text = serializeMemoryOffSessions(ids)
+  assert.match(text, /\n$/, 'the store is newline-terminated')
+  assert.deepEqual(parseMemoryOffSessions(text), ids)
+})
+
+test('an empty store means nothing is muted', () => {
+  assert.deepEqual(parseMemoryOffSessions(serializeMemoryOffSessions([])), [])
+})
+
+test('a damaged or unexpected switch store reads as nothing muted', () => {
+  // The store only ever records SUPPRESSION, so anything unreadable must fail open:
+  // "the mute was forgotten" is recoverable, "memory went quiet everywhere" is not.
+  for (const text of [
+    undefined,
+    '',
+    '   ',
+    '{ not json',
+    '[]', // an array, not the expected object
+    '"a string"',
+    'null',
+    '{}', // an object with no `sessions`
+    JSON.stringify({ sessions: 'not an array' }),
+    JSON.stringify({ sessions: [42, null, ''] }), // only non-empty strings count
+  ]) {
+    assert.deepEqual(parseMemoryOffSessions(text), [], `must read as nothing muted: ${String(text)}`)
+  }
+})
+
+test('the switch store de-duplicates and preserves order', () => {
+  const parsed = parseMemoryOffSessions(JSON.stringify({ sessions: ['b', 'a', 'b', 'a'] }))
+  assert.deepEqual(parsed, ['b', 'a'])
 })
 
 console.log(`\n${passed} tests passed`)

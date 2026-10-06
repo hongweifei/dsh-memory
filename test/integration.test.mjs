@@ -238,6 +238,19 @@ function makeCtx(fs, llm) {
   }
   const commands = makeCommands()
   const tools = makeTools()
+  /**
+   * The live-agent registry, as a route sees it. A browser request arrives with NO
+   * initiator boundary (no HTTP path establishes one), so `currentInitiator` is
+   * undefined there unless a test says otherwise — which is exactly the condition the
+   * switch route has to survive by naming its session.
+   */
+  const liveAgents = []
+  let initiator
+  const agents = {
+    list: () => [...liveAgents],
+    get: (id) => liveAgents.find((agent) => agent.session.id === id),
+    currentInitiator: () => initiator,
+  }
   const ctx = {
     // A real Cordis context exposes injected services as properties, and
     // `commands.register` is reached that way.
@@ -274,10 +287,25 @@ function makeCtx(fs, llm) {
       if (name === 'connection') return connection
       if (name === 'commands') return commands
       if (name === 'tools') return tools
+      if (name === 'agents') return agents
       return services.get(name)
     },
   }
-  return { ctx, listeners, services, routes, commands, tools }
+  return {
+    ctx,
+    listeners,
+    services,
+    routes,
+    commands,
+    tools,
+    agents,
+    /** Register a live agent, so `agents.list()`/`get()` can see it. */
+    addAgent: (agent) => liveAgents.push(agent),
+    /** Set the process-local initiator (a slash command / tool has one; a route does not). */
+    setInitiator: (agent) => {
+      initiator = agent
+    },
+  }
 }
 
 /** Call one registered web route with a Fetch Request. */
@@ -924,6 +952,7 @@ await test('every route declares methods and a buffered body', async () => {
     '/api/memory/preview',
     '/api/memory/refresh',
     '/api/memory/status',
+    '/api/memory/switch',
     '/api/memory/trust',
   ])
   for (const route of routes.values()) {
@@ -934,11 +963,12 @@ await test('every route declares methods and a buffered body', async () => {
   assert.deepEqual(routes.get('/api/memory/status').methods, ['GET'])
   assert.deepEqual(routes.get('/api/memory/file').methods, ['GET', 'POST', 'DELETE'])
   assert.deepEqual(routes.get('/api/memory/trust').methods, ['POST'])
+  assert.deepEqual(routes.get('/api/memory/switch').methods, ['POST'])
 })
 
 await test('the trust route grants and revokes, and rejects a bad action', async () => {
   const fs = makeFs({ [USER_MEMORY]: 'knowledge' })
-  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  const { ctx, routes, setInitiator } = makeCtx(fs, makeLlm('{}'))
   apply(
     ctx,
     loadConfig({
@@ -949,8 +979,7 @@ await test('the trust route grants and revokes, and rejects a bad action', async
   )
   // The panel speaks about the SESSION's folder, not the host's: a route has no
   // agent, so it asks the harness for the current initiator.
-  const session = makeSession([], 'C:\\proj')
-  services.set('agents', { currentInitiator: () => makeAgent(session) })
+  setInitiator(makeAgent(makeSession([], 'C:\\proj')))
 
   const before = await callRoute(routes, '/api/memory/status', {})
   assert.equal(before.json.trust.folder, 'C:\\proj', 'the panel is session-scoped')
@@ -1889,7 +1918,7 @@ await test('a scope is labelled with its workspace name, not its directory slug'
   const active = `${HOME}\\projects\\--D-code-demo--\\memory`
   const orphan = `${HOME}\\projects\\--D-code-orphan--\\memory`
   const fs = makeFs({ [USER_MEMORY]: '# User', [`${active}\\MEMORY.md`]: '# Demo', [`${orphan}\\MEMORY.md`]: '# Orphan' })
-  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  const { ctx, routes, services, setInitiator } = makeCtx(fs, makeLlm('{}'))
   services.set('workspaceRegistry', {
     list: () => [
       { id: 'ws-1', path: 'D:\\code\\demo', title: 'Demo project' },
@@ -1898,7 +1927,7 @@ await test('a scope is labelled with its workspace name, not its directory slug'
     ],
   })
   apply(ctx, trustConfig())
-  services.set('agents', { currentInitiator: () => makeAgent(makeSession([], 'D:\\code\\demo')) })
+  setInitiator(makeAgent(makeSession([], 'D:\\code\\demo')))
 
   const listed = await callRoute(routes, '/api/memory/status', {})
   const labels = Object.fromEntries(listed.json.roots.map((root) => [root.id, root.label]))
@@ -1911,7 +1940,7 @@ await test('a scope is labelled with its workspace name, not its directory slug'
   // Without a registry the panel still works: every row falls back to the slug.
   const bare = makeCtx(fs, makeLlm('{}'))
   apply(bare.ctx, trustConfig())
-  bare.services.set('agents', { currentInitiator: () => makeAgent(makeSession([], 'D:\\code\\demo')) })
+  bare.setInitiator(makeAgent(makeSession([], 'D:\\code\\demo')))
   const plain = await callRoute(bare.routes, '/api/memory/status', {})
   assert.deepEqual(plain.json.roots.map((root) => root.label), [undefined, undefined, undefined])
 })
@@ -1957,9 +1986,9 @@ await test('following the session consults that session instead of the deploymen
   // to hand the session over, exactly as the harness's own tools do, or "follows the
   // session" is a lie in both directions.
   const fs = makeFs({ [USER_MEMORY]: '# Index' })
-  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  const { ctx, routes, services, setInitiator } = makeCtx(fs, makeLlm('{}'))
   apply(ctx, loadConfig({ mode: 'custom', writePolicy: 'session', generation: { turnComplete: { enabled: false } } }))
-  services.set('agents', { currentInitiator: () => makeAgent(makeSession([], 'D:\\code\\demo')) })
+  setInitiator(makeAgent(makeSession([], 'D:\\code\\demo')))
   const asked = []
   services.set('sandboxPolicy', {
     resolve: (request = {}) => {
@@ -2006,7 +2035,7 @@ await test('following the session consults that session instead of the deploymen
         ? { mode: 'workspace-write', workspaceRoot: process.cwd() }
         : { mode: 'read-only', workspaceRoot: request.session.header.cwd },
   })
-  services.set('agents', { currentInitiator: () => undefined })
+  setInitiator(undefined)
   const agentless = await callRoute(routes, '/api/memory/status', {})
   assert.equal(agentless.json.sandboxMode, 'workspace-write')
   assert.equal(agentless.json.sessionMode, undefined, 'no session answered, so none is reported')
@@ -2016,9 +2045,9 @@ await test('the default memory-root policy reports the mode its own writes decla
   // `memory-root` declares the memory directory as the write's workspace, so the session's
   // mode is irrelevant to it — and the row must not pretend the session's fence is in play.
   const fs = makeFs({ [USER_MEMORY]: '# Index' })
-  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  const { ctx, routes, services, setInitiator } = makeCtx(fs, makeLlm('{}'))
   apply(ctx, trustConfig())
-  services.set('agents', { currentInitiator: () => makeAgent(makeSession([], 'D:\\code\\demo')) })
+  setInitiator(makeAgent(makeSession([], 'D:\\code\\demo')))
   services.set('sandboxPolicy', { resolve: () => ({ mode: 'read-only', workspaceRoot: 'D:\\code\\demo' }) })
   const status = await callRoute(routes, '/api/memory/status', {})
   assert.equal(status.json.writePolicy, 'memory-root')
@@ -2099,9 +2128,9 @@ await test('the panel browses every project with memory, not just the active ses
     [`${other}\\MEMORY.md`]: '# Other index',
     [`${other}\\notes.md`]: 'other notes',
   })
-  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  const { ctx, routes, services, setInitiator } = makeCtx(fs, makeLlm('{}'))
   apply(ctx, trustConfig())
-  services.set('agents', { currentInitiator: () => makeAgent(makeSession([], 'D:\\code\\demo')) })
+  setInitiator(makeAgent(makeSession([], 'D:\\code\\demo')))
 
   const listed = await callRoute(routes, '/api/memory/status', {})
   // The user scope, the session's project, and the project that is merely on disk.
@@ -2151,9 +2180,9 @@ await test('with the trust gate on, only the current project is offered', async 
     [`${active}\\MEMORY.md`]: '# Demo',
     [`${other}\\MEMORY.md`]: '# Other',
   })
-  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  const { ctx, routes, services, setInitiator } = makeCtx(fs, makeLlm('{}'))
   apply(ctx, loadConfig({ mode: 'custom', trust: { enabled: true }, generation: { turnComplete: { enabled: false } } }))
-  services.set('agents', { currentInitiator: () => makeAgent(makeSession([], 'D:\\code\\demo')) })
+  setInitiator(makeAgent(makeSession([], 'D:\\code\\demo')))
 
   // Untrusted: the project scope is absent, so nothing project-shaped is offered.
   const closed = await callRoute(routes, '/api/memory/status', {})
@@ -3179,6 +3208,287 @@ await test('in-turn generation records mid-turn work, and the cursor keeps it in
   const second = JSON.stringify(llm.calls[1].messages)
   assert.match(second, /ran the second tool/)
   assert.ok(!second.includes('a long task, step one'), 'the cursor must not resend what was already recorded')
+})
+
+/* ================= the per-session switch ================= */
+
+/** The switch store, beside the plugin's other stores under `$DSH_HOME`. */
+const SWITCH_STORE = `${HOME}\\memory-off-sessions.json`
+
+/**
+ * A fixture with both halves enabled and a working generation plan, plus one live
+ * agent registered so the routes can resolve it.
+ */
+function switchFixture(options = {}) {
+  const fs = makeFs({ [USER_MEMORY]: 'user knowledge', ...(options.files ?? {}) })
+  const plan = JSON.stringify({
+    writes: [{ rootId: 'user', path: 'MEMORY.md', content: '# Recorded\n\nsomething', mode: 'replace' }],
+    reason: 'recorded a fact',
+  })
+  const llm = makeLlm(plan)
+  const made = makeCtx(fs, llm)
+  apply(
+    made.ctx,
+    loadConfig({
+      mode: 'custom',
+      projectScope: false,
+      generation: { turnComplete: { minPromptChars: 1 } },
+    }),
+  )
+  const session = makeSession([], 'C:\\proj')
+  const agent = makeAgent(session)
+  made.addAgent(agent)
+  // The preview and refresh routes speak for the initiator; a browser request usually
+  // has none, which is why the switch ROUTE names its session instead.
+  made.setInitiator(agent)
+  return { fs, llm, session, agent, ...made }
+}
+
+await test('switching a session off stops BOTH halves: no injection, and no recording', async () => {
+  const { fs, listeners, services, agent, llm } = switchFixture()
+  const service = services.get('memory')
+
+  // ON by default: a step injects, and a completed turn is recorded.
+  const first = await runPreStep(listeners, agent)
+  assert.equal(first.messages.length, 1, 'memory is injected while the switch is on')
+  const log = makeLog(agent.session)
+  log.turn(listeners, agent, 1, 'a long enough prompt to pass the gate')
+  await service.flushMemory()
+  assert.equal(llm.calls.length, 1, 'a completed turn is recorded while the switch is on')
+  // The recorded pass really changed the file, so the muted step below would otherwise
+  // have something to say — which is what makes "nothing was injected" meaningful.
+  const recorded = fs.files.get(USER_MEMORY)
+  assert.match(recorded, /Recorded/)
+
+  // OFF: the very next step injects nothing, and the next turn records nothing.
+  const switched = await service.setMemorySwitch(agent.session, true)
+  assert.equal(switched.off, true)
+  assert.equal(switched.changed, true)
+  const second = await runPreStep(listeners, agent)
+  assert.equal(second.messages.length, 0, 'a muted session gets nothing injected, even after a change')
+  log.turn(listeners, agent, 2, 'another long enough prompt to pass the gate')
+  await service.flushMemory()
+  assert.equal(llm.calls.length, 1, 'a muted session records nothing either')
+
+  // The file is untouched by the muted turn, and the store names the session.
+  assert.equal(fs.files.get(USER_MEMORY), recorded, 'the muted turn wrote nothing')
+  assert.deepEqual(JSON.parse(fs.files.get(SWITCH_STORE)).sessions, ['session-1'])
+})
+
+await test('a muted session drops memory already queued in its inbox', async () => {
+  // The half-step case that matters: a message injected before the switch was flipped
+  // is a lie sitting in the reader's own queue, so it must be removed, not left there.
+  const { listeners, services, agent } = switchFixture()
+  const service = services.get('memory')
+  await runPreStep(listeners, agent)
+  const queued = { id: 'queued-memory', source: { kind: 'memory', identity: 'x' } }
+  agent.inbox.nextStep.push(queued)
+  await service.setMemorySwitch(agent.session, true)
+  const decision = await runPreStep(listeners, agent)
+  assert.deepEqual(agent.removed, ['queued-memory'], 'the stale injection must be removed')
+  assert.equal(decision.messages.length, 0)
+})
+
+await test('turning the switch back on injects again, and is persisted', async () => {
+  const { fs, listeners, services, agent } = switchFixture({
+    files: { [SWITCH_STORE]: JSON.stringify({ sessions: ['session-1'] }) },
+  })
+  const service = services.get('memory')
+
+  // The store was read before the first step, so a resumed mute is honoured at once.
+  const muted = await runPreStep(listeners, agent)
+  assert.equal(muted.messages.length, 0, 'a mute remembered on disk is honoured on the first step')
+
+  const back = await service.setMemorySwitch(agent.session, false)
+  assert.equal(back.off, false)
+  assert.equal(back.changed, true)
+  const injected = await runPreStep(listeners, agent)
+  assert.equal(injected.messages.length, 1, 'turning it back on injects again')
+  assert.deepEqual(JSON.parse(fs.files.get(SWITCH_STORE)).sessions, [], 'the store no longer names it')
+})
+
+await test('setting the switch twice is a no-op that does not rewrite the store', async () => {
+  const { fs, services, agent } = switchFixture()
+  const service = services.get('memory')
+  await service.setMemorySwitch(agent.session, true)
+  const writes = fs.writes.length
+  const again = await service.setMemorySwitch(agent.session, true)
+  assert.equal(again.changed, false, 'an unchanged switch reports that nothing changed')
+  assert.equal(fs.writes.length, writes, 'and does not write the store again')
+})
+
+await test('a damaged switch store reads as nothing muted, not as everything muted', async () => {
+  // The store only ever records SUPPRESSION, so a lost or damaged one must fail open:
+  // the failure mode is "the mute was forgotten", never "memory went quiet everywhere".
+  const { listeners, services, agent } = switchFixture({
+    files: { [SWITCH_STORE]: '{ this is not json' },
+  })
+  const injected = await runPreStep(listeners, agent)
+  assert.equal(injected.messages.length, 1, 'a damaged store must not mute anything')
+  assert.deepEqual(services.get('memory').status({ session: agent.session }).switchedOff, false)
+})
+
+await test('the switch is per session: a muted session does not mute another', async () => {
+  const { listeners, services, agent, ctx } = switchFixture()
+  const service = services.get('memory')
+  await service.setMemorySwitch(agent.session, true)
+
+  const other = makeAgent({ ...makeSession([], 'C:\\other'), id: 'session-2' })
+  const injected = await runPreStep(listeners, other)
+  assert.equal(injected.messages.length, 1, 'another session still gets its memory')
+})
+
+await test('a deliberate refresh and the memory tool respect the switch, and say why', async () => {
+  const { services, commands, tools, agent, fs } = switchFixture()
+  const service = services.get('memory')
+  await service.setMemorySwitch(agent.session, true)
+
+  // `/memory-refresh`: not silently ignored — the caller is told how to lift the mute.
+  const refreshed = await runCommand(commands, 'memory-refresh', { agent })
+  assert.equal(refreshed.kind, 'success')
+  assert.match(refreshed.text, /memory is switched off/i)
+  assert.match(refreshed.text, /\/memory-switch on/)
+
+  // The model-facing write tool is refused with the same reason.
+  const tool = tools.registered.get('memory')
+  const written = await tool.execute({ action: 'write', scope: 'user', path: 'NEW.md', content: '# new' }, {
+    agent,
+    signal: new AbortController().signal,
+  })
+  assert.equal(written.ok, false)
+  assert.match(written.message, /switched off/)
+  assert.equal(fs.files.has(`${HOME}\\memory\\NEW.md`), false, 'a muted session must write nothing')
+  // Reading stays available: asking memory a question does not let it affect the session.
+  const read = await tool.execute({ action: 'list', scope: 'user' }, { agent, signal: new AbortController().signal })
+  assert.equal(read.ok, true, 'a muted session may still READ memory')
+})
+
+await test('/memory-switch reports and changes the decision, and /memory states it', async () => {
+  const { commands, agent } = switchFixture()
+  const status = await runCommand(commands, 'memory-switch', { agent })
+  assert.match(status.text, /session memory: ON/)
+  assert.match(status.text, /session-1/)
+
+  const off = await runCommand(commands, 'memory-switch', { agent, rawInput: 'off' })
+  assert.match(off.text, /session memory: OFF/)
+  assert.match(off.text, /nothing is injected into this session, and nothing from it is recorded/)
+
+  // `/memory` says the switch's state BEFORE its results, so a quiet session is explained.
+  const report = await runCommand(commands, 'memory', { agent })
+  assert.match(report.text, /session switch: OFF/)
+
+  const on = await runCommand(commands, 'memory-switch', { agent, rawInput: 'on' })
+  assert.match(on.text, /session memory: ON/)
+  // Turning it back on does not re-inject by itself, and the command says so.
+  assert.match(on.text, /\/memory-refresh forces it now/)
+
+  const bad = await runCommand(commands, 'memory-switch', { agent, rawInput: 'maybe' })
+  assert.equal(bad.kind, 'error')
+  assert.match(bad.text, /unknown action "maybe"/)
+})
+
+await test('/memory-switch is registered, and reported by the panel command list', async () => {
+  const { commands } = switchFixture()
+  assert.ok(commands.registered.has('memory-switch'), '/memory-switch must be registered')
+  assert.match(commands.registered.get('memory-switch').description, /THIS session/)
+})
+
+await test('the switch route toggles a NAMED session and refuses an unknown one', async () => {
+  const { routes, session, setInitiator, agent } = switchFixture()
+
+  // No session named AND no initiator: this is the real browser case (no HTTP path
+  // establishes an initiator boundary), so the route must say so rather than guess.
+  setInitiator(undefined)
+  const unnamed = await callRoute(routes, '/api/memory/switch', { method: 'POST', body: { off: true } })
+  assert.equal(unnamed.status, 409)
+  assert.match(unnamed.json.error, /session is required/)
+
+  // A named session that does not exist is refused, not silently redirected to another.
+  const unknown = await callRoute(routes, '/api/memory/switch', {
+    method: 'POST',
+    body: { session: 'session-nope', off: true },
+  })
+  assert.equal(unknown.status, 409)
+  assert.match(unknown.json.error, /no live session has that id/)
+
+  // A live session is switched, and the reply carries the recomputed session list.
+  const off = await callRoute(routes, '/api/memory/switch', {
+    method: 'POST',
+    body: { session: session.id, off: true },
+  })
+  assert.equal(off.status, 200)
+  assert.equal(off.json.off, true)
+  assert.equal(off.json.changed, true)
+  assert.deepEqual(off.json.sessions, [{ id: 'session-1', cwd: 'C:\\proj', off: true }])
+
+  const on = await callRoute(routes, '/api/memory/switch', {
+    method: 'POST',
+    body: { session: session.id, off: false },
+  })
+  assert.equal(on.json.off, false)
+
+  // With an initiator in scope (a programmatic caller rather than the panel) an unnamed
+  // request means THAT session — the same seam preview and refresh resolve through.
+  setInitiator(agent)
+  const implied = await callRoute(routes, '/api/memory/switch', { method: 'POST', body: { off: true } })
+  assert.equal(implied.status, 200)
+  assert.equal(implied.json.session, 'session-1')
+
+  // A body without a boolean is a client error, not a default.
+  const bad = await callRoute(routes, '/api/memory/switch', { method: 'POST', body: { session: session.id } })
+  assert.equal(bad.status, 400)
+  assert.match(bad.json.error, /off must be a boolean/)
+})
+
+await test('the status route publishes the switch and every live session', async () => {
+  const { routes, session, agent } = switchFixture()
+  const before = await callRoute(routes, '/api/memory/status')
+  assert.deepEqual(before.json.sessions, [{ id: 'session-1', cwd: 'C:\\proj', off: false }])
+  assert.equal(before.json.memorySwitch.available, true)
+
+  await callRoute(routes, '/api/memory/switch', { method: 'POST', body: { session: session.id, off: true } })
+  const after = await callRoute(routes, '/api/memory/status')
+  assert.deepEqual(after.json.sessions, [{ id: 'session-1', cwd: 'C:\\proj', off: true }])
+  assert.equal(agent.session.id, session.id)
+})
+
+await test('the preview route answers a REAL preview, not a 500', async () => {
+  // This is the test whose absence hid a real defect: the route passed a SESSION into
+  // `previewMemory(agent)`, which then read `target.session` (undefined) and threw
+  // inside the route's catch — so the panel's preview was a 500 whenever a session was
+  // in scope. The panel fixture served a canned payload, so nothing caught it.
+  const { routes, fs } = switchFixture()
+  const response = await callRoute(routes, '/api/memory/preview')
+  assert.equal(response.status, 200, `the preview route must not fail: ${JSON.stringify(response.json)}`)
+  assert.equal(response.json.available, true)
+  assert.equal(response.json.off, undefined)
+  assert.match(response.json.snapshot.text, /user knowledge/)
+  assert.ok(response.json.snapshot.tokens > 0)
+  assert.ok(fs.reads.length > 0, 'an unmuted preview really reads the memory files')
+})
+
+await test('a preview of a muted session says the switch is why, without running the pass', async () => {
+  const { routes, session, fs } = switchFixture()
+  await callRoute(routes, '/api/memory/switch', { method: 'POST', body: { session: session.id, off: true } })
+  const reads = fs.reads.length
+  const { status, json } = await callRoute(routes, '/api/memory/preview')
+  assert.equal(status, 200)
+  assert.equal(json.available, true)
+  assert.equal(json.switchedOff, true)
+  assert.equal(json.step.action, 'silent')
+  assert.match(json.step.reason, /switched off/)
+  assert.equal(fs.reads.length, reads, 'muted previews must not read memory files')
+})
+
+await test('a removed session id does not linger in the store forever', async () => {
+  // The store is a suppression list, so a session that no longer exists is inert: an
+  // id nobody can match simply never applies. This pins that it is not somehow
+  // applied to the CURRENT session just because it is the only entry.
+  const { listeners, services, agent } = switchFixture({
+    files: { [SWITCH_STORE]: JSON.stringify({ sessions: ['session-long-gone'] }) },
+  })
+  assert.equal((await runPreStep(listeners, agent)).messages.length, 1, 'another session id must not mute this one')
+  assert.deepEqual(services.get('memory').status({ session: agent.session }).switchedOff, false)
 })
 
 console.log(`\n${passed} integration tests passed`)
