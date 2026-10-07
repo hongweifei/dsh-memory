@@ -963,7 +963,10 @@ await test('every route declares methods and a buffered body', async () => {
   assert.deepEqual(routes.get('/api/memory/status').methods, ['GET'])
   assert.deepEqual(routes.get('/api/memory/file').methods, ['GET', 'POST', 'DELETE'])
   assert.deepEqual(routes.get('/api/memory/trust').methods, ['POST'])
-  assert.deepEqual(routes.get('/api/memory/switch').methods, ['POST'])
+  // GET is what the composer reads (one session, its mode); POST is the settings list. They
+  // are the same PATH because they are the same resource, so the client route set stays one
+  // literal per resource.
+  assert.deepEqual(routes.get('/api/memory/switch').methods, ['GET', 'POST'])
 })
 
 await test('the trust route grants and revokes, and rejects a bad action', async () => {
@@ -2038,7 +2041,7 @@ await test('following the session consults that session instead of the deploymen
   setInitiator(undefined)
   const agentless = await callRoute(routes, '/api/memory/status', {})
   assert.equal(agentless.json.sandboxMode, 'workspace-write')
-  assert.equal(agentless.json.sessionMode, undefined, 'no session answered, so none is reported')
+  assert.equal(agentless.json.memoryMode, undefined, 'no session answered, so none is reported')
 })
 
 await test('the default memory-root policy reports the mode its own writes declare', async () => {
@@ -3231,8 +3234,13 @@ function switchFixture(options = {}) {
     made.ctx,
     loadConfig({
       mode: 'custom',
-      projectScope: false,
+      // Both built-in scopes ON, so a session's own scope choice has something to narrow.
+      // `mode: custom` without a roots list still resolves the built-ins.
+      userScope: true,
+      projectScope: true,
       generation: { turnComplete: { minPromptChars: 1 } },
+      // Overrides for the global-scope tests, applied last so they win.
+      ...(options.config ?? {}),
     }),
   )
   const session = makeSession([], 'C:\\proj')
@@ -3261,8 +3269,8 @@ await test('switching a session off stops BOTH halves: no injection, and no reco
   assert.match(recorded, /Recorded/)
 
   // OFF: the very next step injects nothing, and the next turn records nothing.
-  const switched = await service.setMemorySwitch(agent.session, true)
-  assert.equal(switched.off, true)
+  const switched = await service.setMemorySwitch(agent.session, 'off')
+  assert.equal(switched.mode, 'off')
   assert.equal(switched.changed, true)
   const second = await runPreStep(listeners, agent)
   assert.equal(second.messages.length, 0, 'a muted session gets nothing injected, even after a change')
@@ -3272,7 +3280,7 @@ await test('switching a session off stops BOTH halves: no injection, and no reco
 
   // The file is untouched by the muted turn, and the store names the session.
   assert.equal(fs.files.get(USER_MEMORY), recorded, 'the muted turn wrote nothing')
-  assert.deepEqual(JSON.parse(fs.files.get(SWITCH_STORE)).sessions, ['session-1'])
+  assert.deepEqual(JSON.parse(fs.files.get(SWITCH_STORE)).sessions, { 'session-1': 'off' })
 })
 
 await test('a muted session drops memory already queued in its inbox', async () => {
@@ -3283,7 +3291,7 @@ await test('a muted session drops memory already queued in its inbox', async () 
   await runPreStep(listeners, agent)
   const queued = { id: 'queued-memory', source: { kind: 'memory', identity: 'x' } }
   agent.inbox.nextStep.push(queued)
-  await service.setMemorySwitch(agent.session, true)
+  await service.setMemorySwitch(agent.session, 'off')
   const decision = await runPreStep(listeners, agent)
   assert.deepEqual(agent.removed, ['queued-memory'], 'the stale injection must be removed')
   assert.equal(decision.messages.length, 0)
@@ -3299,39 +3307,41 @@ await test('turning the switch back on injects again, and is persisted', async (
   const muted = await runPreStep(listeners, agent)
   assert.equal(muted.messages.length, 0, 'a mute remembered on disk is honoured on the first step')
 
-  const back = await service.setMemorySwitch(agent.session, false)
-  assert.equal(back.off, false)
+  const back = await service.setMemorySwitch(agent.session, 'auto')
+  assert.equal(back.mode, 'auto')
   assert.equal(back.changed, true)
   const injected = await runPreStep(listeners, agent)
   assert.equal(injected.messages.length, 1, 'turning it back on injects again')
-  assert.deepEqual(JSON.parse(fs.files.get(SWITCH_STORE)).sessions, [], 'the store no longer names it')
+  // `auto` is stored as ABSENCE, so the store stops naming it entirely — which is what lets a
+  // later configuration change reach this session instead of being pinned by a stale entry.
+  assert.deepEqual(JSON.parse(fs.files.get(SWITCH_STORE)).sessions, {}, 'the store no longer names it')
 })
 
 await test('setting the switch twice is a no-op that does not rewrite the store', async () => {
   const { fs, services, agent } = switchFixture()
   const service = services.get('memory')
-  await service.setMemorySwitch(agent.session, true)
+  await service.setMemorySwitch(agent.session, 'off')
   const writes = fs.writes.length
-  const again = await service.setMemorySwitch(agent.session, true)
+  const again = await service.setMemorySwitch(agent.session, 'off')
   assert.equal(again.changed, false, 'an unchanged switch reports that nothing changed')
   assert.equal(fs.writes.length, writes, 'and does not write the store again')
 })
 
-await test('a damaged switch store reads as nothing muted, not as everything muted', async () => {
-  // The store only ever records SUPPRESSION, so a lost or damaged one must fail open:
-  // the failure mode is "the mute was forgotten", never "memory went quiet everywhere".
-  const { listeners, services, agent } = switchFixture({
+await test('a damaged switch store reads as no override, not as everything muted', async () => {
+  // The store only ever records a DEVIATION, so a lost or damaged one must fail open: the
+  // failure mode is "the override was forgotten", never "memory went quiet everywhere".
+  const { routes, listeners, services, agent } = switchFixture({
     files: { [SWITCH_STORE]: '{ this is not json' },
   })
   const injected = await runPreStep(listeners, agent)
   assert.equal(injected.messages.length, 1, 'a damaged store must not mute anything')
-  assert.deepEqual(services.get('memory').status({ session: agent.session }).switchedOff, false)
+  assert.equal((await callRoute(routes, '/api/memory/status')).json.memoryMode, 'auto')
 })
 
 await test('the switch is per session: a muted session does not mute another', async () => {
   const { listeners, services, agent, ctx } = switchFixture()
   const service = services.get('memory')
-  await service.setMemorySwitch(agent.session, true)
+  await service.setMemorySwitch(agent.session, 'off')
 
   const other = makeAgent({ ...makeSession([], 'C:\\other'), id: 'session-2' })
   const injected = await runPreStep(listeners, other)
@@ -3341,13 +3351,13 @@ await test('the switch is per session: a muted session does not mute another', a
 await test('a deliberate refresh and the memory tool respect the switch, and say why', async () => {
   const { services, commands, tools, agent, fs } = switchFixture()
   const service = services.get('memory')
-  await service.setMemorySwitch(agent.session, true)
+  await service.setMemorySwitch(agent.session, 'off')
 
   // `/memory-refresh`: not silently ignored — the caller is told how to lift the mute.
   const refreshed = await runCommand(commands, 'memory-refresh', { agent })
   assert.equal(refreshed.kind, 'success')
   assert.match(refreshed.text, /memory is switched off/i)
-  assert.match(refreshed.text, /\/memory-switch on/)
+  assert.match(refreshed.text, /composer/)
 
   // The model-facing write tool is refused with the same reason.
   const tool = tools.registered.get('memory')
@@ -3363,24 +3373,97 @@ await test('a deliberate refresh and the memory tool respect the switch, and say
   assert.equal(read.ok, true, 'a muted session may still READ memory')
 })
 
-await test('/memory-switch reports and changes the decision, and /memory states it', async () => {
+await test('`project` mode loads project memory and withholds user-scope memory', async () => {
+  // The point of the feature: a session that does not want OTHER projects' knowledge, while
+  // still working normally against its own repository's memory.
+  const { fs, listeners, services, agent } = switchFixture({
+    files: {
+      [USER_MEMORY]: 'cross-project knowledge nobody wants here',
+      [PROJECT_MEMORY]: 'this repository conventions',
+    },
+  })
+  const service = services.get('memory')
+
+  const all = await runPreStep(listeners, agent)
+  assert.match(all.messages[0].content[0].text, /cross-project knowledge/)
+  assert.match(all.messages[0].content[0].text, /repository conventions/)
+
+  await service.setMemorySwitch(agent.session, 'project')
+  const scoped = await runPreStep(listeners, agent)
+  assert.equal(scoped.messages.length, 1, 'the project scope still injects')
+  assert.match(scoped.messages[0].content[0].text, /repository conventions/, 'project memory is still loaded')
+  assert.doesNotMatch(scoped.messages[0].content[0].text, /cross-project knowledge/, 'user memory is withheld')
+})
+
+await test('`project` mode also withholds the user scope from the WRITE side', async () => {
+  // Both halves, as with `off`: a scope that is not loaded must not be silently written to
+  // either, or a "quiet" session would keep contributing to the knowledge it opted out of.
+  const { fs, services, tools, agent } = switchFixture()
+  const service = services.get('memory')
+  await service.setMemorySwitch(agent.session, 'project')
+  const tool = tools.registered.get('memory')
+
+  const written = await tool.execute(
+    { action: 'write', scope: 'user', path: 'NEW.md', content: '# new' },
+    { agent, signal: new AbortController().signal },
+  )
+  assert.equal(written.ok, false, 'a project-scoped session may not write cross-project memory')
+  assert.match(written.message, /not enabled/)
+  assert.equal(fs.files.has(`${HOME}\\memory\\NEW.md`), false)
+
+  // And its own project scope still works: this is a narrowing, not a mute.
+  const own = await tool.execute(
+    { action: 'write', scope: 'project', path: 'OWN.md', content: '# own' },
+    { agent, signal: new AbortController().signal },
+  )
+  assert.equal(own.ok, true, 'the project scope must stay writable')
+})
+
+await test('`project` mode is not a mute: generation still records', async () => {
+  const { listeners, services, agent, llm } = switchFixture()
+  const service = services.get('memory')
+  await service.setMemorySwitch(agent.session, 'project')
+  const log = makeLog(agent.session)
+  log.turn(listeners, agent, 1, 'a long enough prompt to pass the gate')
+  await service.flushMemory()
+  assert.equal(llm.calls.length, 1, 'a project-scoped session still records its own work')
+})
+
+await test('the mode survives a restart, and a v1 store still mutes', async () => {
+  // Resume is the case the store exists for: the mode is keyed by session id, so it comes
+  // back with the session. The v1 array shape is the compatibility case.
+  const current = switchFixture({
+    files: { [SWITCH_STORE]: JSON.stringify({ version: 2, sessions: { 'session-1': 'project' } }) },
+  })
+  assert.equal((await callRoute(current.routes, '/api/memory/status')).json.memoryMode, 'project')
+
+  const legacy = switchFixture({ files: { [SWITCH_STORE]: JSON.stringify({ sessions: ['session-1'] }) } })
+  assert.equal((await callRoute(legacy.routes, '/api/memory/status')).json.memoryMode, 'off')
+})
+
+await test('/memory-switch reports and changes the mode, and /memory states it', async () => {
   const { commands, agent } = switchFixture()
   const status = await runCommand(commands, 'memory-switch', { agent })
-  assert.match(status.text, /session memory: ON/)
+  assert.match(status.text, /session memory: auto/)
   assert.match(status.text, /session-1/)
 
   const off = await runCommand(commands, 'memory-switch', { agent, rawInput: 'off' })
-  assert.match(off.text, /session memory: OFF/)
+  assert.match(off.text, /session memory: off/)
   assert.match(off.text, /nothing is injected into this session, and nothing from it is recorded/)
 
-  // `/memory` says the switch's state BEFORE its results, so a quiet session is explained.
+  // `/memory` states the session's mode BEFORE its results, so a narrowed session is explained
+  // rather than looking like memory that has lost half its content.
   const report = await runCommand(commands, 'memory', { agent })
-  assert.match(report.text, /session switch: OFF/)
+  assert.match(report.text, /session memory: off/)
 
-  const on = await runCommand(commands, 'memory-switch', { agent, rawInput: 'on' })
-  assert.match(on.text, /session memory: ON/)
-  // Turning it back on does not re-inject by itself, and the command says so.
-  assert.match(on.text, /\/memory-refresh forces it now/)
+  const project = await runCommand(commands, 'memory-switch', { agent, rawInput: 'project' })
+  assert.match(project.text, /session memory: project/)
+  assert.match(project.text, /cross-project \(user-scope\) knowledge is neither loaded nor recorded/)
+  // Leaving `off` does not re-inject by itself, and the command says so.
+  assert.match(project.text, /\/memory-refresh forces it now/)
+
+  const auto = await runCommand(commands, 'memory-switch', { agent, rawInput: 'auto' })
+  assert.match(auto.text, /session memory: auto/)
 
   const bad = await runCommand(commands, 'memory-switch', { agent, rawInput: 'maybe' })
   assert.equal(bad.kind, 'error')
@@ -3393,62 +3476,171 @@ await test('/memory-switch is registered, and reported by the panel command list
   assert.match(commands.registered.get('memory-switch').description, /THIS session/)
 })
 
-await test('the switch route toggles a NAMED session and refuses an unknown one', async () => {
+await test('/memory-scope reports the global layer, and refuses to guess when it cannot write', async () => {
+  // The GLOBAL level, which is what a session's `auto` follows. A headless composition has no
+  // `configEditor`, so the command must say the value and explain that it is set in config — never
+  // silently pretend the change was applied.
+  const { commands } = switchFixture()
+  const status = await runCommand(commands, 'memory-scope')
+  assert.equal(status.kind, 'success')
+  assert.match(status.text, /global memory scopes: all/)
+  assert.match(status.text, /every configured scope is loaded and recorded/)
+  assert.match(status.text, /userScope \/ projectScope/, 'and names the config fields, since it cannot write')
+
+  const denied = await runCommand(commands, 'memory-scope', { rawInput: 'project' })
+  assert.equal(denied.kind, 'error', 'without configEditor the change is refused, not faked')
+  assert.match(denied.text, /no configEditor/)
+
+  const bad = await runCommand(commands, 'memory-scope', { rawInput: 'everything' })
+  assert.equal(bad.kind, 'error')
+  assert.match(bad.text, /unknown action "everything"/)
+})
+
+await test('/memory-scope writes the global scopes through configEditor', async () => {
+  // A plugin's ONE sanctioned way to change its own configuration: `edit` validates, persists and
+  // reconciles through the normal Loader path, so ordinary lifecycle rules still apply.
+  const { commands, ctx, services } = switchFixture()
+  const edits = []
+  services.set('configEditor', {
+    entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
+    edit: async (entry, change) => {
+      edits.push({ entry, next: change({ userScope: true, projectScope: true, mode: 'native' }) })
+    },
+  })
+
+  // With the editor present the command offers itself, and the status row says it is writable.
+  const status = await runCommand(commands, 'memory-scope')
+  assert.match(status.text, /\/memory-scope all \| project \| user/)
+
+  const scoped = await runCommand(commands, 'memory-scope', { rawInput: 'project' })
+  assert.equal(scoped.kind, 'success')
+  assert.match(scoped.text, /global memory scopes: project/)
+  assert.equal(edits.length, 1)
+  assert.equal(edits[0].entry.options.name, '@dsh-external/dsh-memory', 'the entry is found by specifier')
+  // `project` means: keep the project scope, drop the user scope. Nothing else is touched.
+  assert.deepEqual(edits[0].next, { userScope: false, projectScope: true, mode: 'native' })
+
+  const user = await runCommand(commands, 'memory-scope', { rawInput: 'user' })
+  assert.deepEqual(edits[1].next, { userScope: true, projectScope: false, mode: 'native' })
+  const all = await runCommand(commands, 'memory-scope', { rawInput: 'all' })
+  assert.deepEqual(edits[2].next, { userScope: true, projectScope: true, mode: 'native' })
+  assert.match(all.text, /global memory scopes: all/)
+})
+
+await test('/memory-scope reports all four global states, not just two', async () => {
+  // A real defect this pins: reporting only "both" vs "project" turned `userScope: true,
+  // projectScope: false` into "all" — the exact opposite of the truth — and folded "neither" into
+  // "project". A user reading the composer's `auto` has no other way to see this layer.
+  for (const [flags, want] of [
+    [{ userScope: true, projectScope: true }, 'all'],
+    [{ userScope: false, projectScope: true }, 'project'],
+    [{ userScope: true, projectScope: false }, 'user'],
+    [{ userScope: false, projectScope: false }, 'none'],
+  ]) {
+    const { routes } = switchFixture({ config: flags })
+    const response = await callRoute(routes, '/api/memory/status')
+    assert.equal(response.json.globalScopes, want, `${JSON.stringify(flags)} must report "${want}"`)
+  }
+})
+
+await test('the switch route sets a NAMED session and refuses an unknown one', async () => {
   const { routes, session, setInitiator, agent } = switchFixture()
 
   // No session named AND no initiator: this is the real browser case (no HTTP path
   // establishes an initiator boundary), so the route must say so rather than guess.
   setInitiator(undefined)
-  const unnamed = await callRoute(routes, '/api/memory/switch', { method: 'POST', body: { off: true } })
+  const unnamed = await callRoute(routes, '/api/memory/switch', { method: 'POST', body: { mode: 'off' } })
   assert.equal(unnamed.status, 409)
   assert.match(unnamed.json.error, /session is required/)
 
   // A named session that does not exist is refused, not silently redirected to another.
   const unknown = await callRoute(routes, '/api/memory/switch', {
     method: 'POST',
-    body: { session: 'session-nope', off: true },
+    body: { session: 'session-nope', mode: 'off' },
   })
   assert.equal(unknown.status, 409)
   assert.match(unknown.json.error, /no live session has that id/)
 
-  // A live session is switched, and the reply carries the recomputed session list.
+  // A live session is switched, and the reply carries the global layer the session's `auto` would
+  // follow — so the composer can re-render its title without a second round-trip.
   const off = await callRoute(routes, '/api/memory/switch', {
     method: 'POST',
-    body: { session: session.id, off: true },
+    body: { session: session.id, mode: 'off' },
   })
   assert.equal(off.status, 200)
-  assert.equal(off.json.off, true)
+  assert.equal(off.json.mode, 'off')
   assert.equal(off.json.changed, true)
-  assert.deepEqual(off.json.sessions, [{ id: 'session-1', cwd: 'C:\\proj', off: true }])
+  assert.equal(off.json.global, 'all', 'both global scopes are on in this fixture')
+  // Sessions are NOT enumerated in any reply: the panel no longer lists them — the composer acts
+  // on its own session id.
+  assert.equal(off.json.sessions, undefined)
 
-  const on = await callRoute(routes, '/api/memory/switch', {
+  const project = await callRoute(routes, '/api/memory/switch', {
     method: 'POST',
-    body: { session: session.id, off: false },
+    body: { session: session.id, mode: 'project' },
   })
-  assert.equal(on.json.off, false)
+  assert.equal(project.json.mode, 'project')
 
   // With an initiator in scope (a programmatic caller rather than the panel) an unnamed
   // request means THAT session — the same seam preview and refresh resolve through.
   setInitiator(agent)
-  const implied = await callRoute(routes, '/api/memory/switch', { method: 'POST', body: { off: true } })
+  const implied = await callRoute(routes, '/api/memory/switch', { method: 'POST', body: { mode: 'off' } })
   assert.equal(implied.status, 200)
   assert.equal(implied.json.session, 'session-1')
 
-  // A body without a boolean is a client error, not a default.
-  const bad = await callRoute(routes, '/api/memory/switch', { method: 'POST', body: { session: session.id } })
-  assert.equal(bad.status, 400)
-  assert.match(bad.json.error, /off must be a boolean/)
+  // A body without a known mode is a client error, not a default — and the two-state
+  // vocabulary is gone, so `on` is refused rather than guessed at.
+  const missing = await callRoute(routes, '/api/memory/switch', { method: 'POST', body: { session: session.id } })
+  assert.equal(missing.status, 400)
+  assert.match(missing.json.error, /mode must be one of auto, project, off/)
+  const twoState = await callRoute(routes, '/api/memory/switch', {
+    method: 'POST',
+    body: { session: session.id, off: true },
+  })
+  assert.equal(twoState.status, 400, 'the old { off } payload must not be silently accepted')
 })
 
-await test('the status route publishes the switch and every live session', async () => {
+await test('the switch route READS one session, for the composer', async () => {
+  // The composer lives in the conversation, not in settings, and it knows its own session id.
+  // GET is what it polls: one session, its mode, and the vocabulary a button needs.
+  const { routes, session, setInitiator } = switchFixture()
+  setInitiator(undefined)
+
+  const found = await callRoute(routes, '/api/memory/switch', { query: `?session=${session.id}` })
+  assert.equal(found.status, 200)
+  assert.equal(found.json.session, 'session-1')
+  assert.equal(found.json.mode, 'auto')
+  assert.deepEqual(found.json.modes, ['auto', 'project', 'off'])
+  assert.equal(found.json.cwd, 'C:\\proj')
+
+  // A named session that does not exist is refused, exactly as on the write side, so the
+  // composer can show an error instead of rendering another session's state.
+  const unknown = await callRoute(routes, '/api/memory/switch', { query: '?session=session-nope' })
+  assert.equal(unknown.status, 409)
+  // And with no session at all there is nothing to report: a route has no initiator.
+  const missing = await callRoute(routes, '/api/memory/switch')
+  assert.equal(missing.status, 409)
+
+  // The composer's write is the same route and the same named session.
+  const set = await callRoute(routes, '/api/memory/switch', {
+    method: 'POST',
+    body: { session: session.id, mode: 'project' },
+  })
+  assert.equal(set.status, 200)
+  const after = await callRoute(routes, '/api/memory/switch', { query: `?session=${session.id}` })
+  assert.equal(after.json.mode, 'project')
+})
+
+await test('the status route publishes the session mode and the global layer', async () => {
   const { routes, session, agent } = switchFixture()
   const before = await callRoute(routes, '/api/memory/status')
-  assert.deepEqual(before.json.sessions, [{ id: 'session-1', cwd: 'C:\\proj', off: false }])
+  assert.equal(before.json.memoryMode, 'auto')
+  assert.equal(before.json.globalScopes, 'all')
   assert.equal(before.json.memorySwitch.available, true)
 
-  await callRoute(routes, '/api/memory/switch', { method: 'POST', body: { session: session.id, off: true } })
+  await callRoute(routes, '/api/memory/switch', { method: 'POST', body: { session: session.id, mode: 'project' } })
   const after = await callRoute(routes, '/api/memory/status')
-  assert.deepEqual(after.json.sessions, [{ id: 'session-1', cwd: 'C:\\proj', off: true }])
+  assert.equal(after.json.memoryMode, 'project', 'the panel sees the session decision it must explain')
   assert.equal(agent.session.id, session.id)
 })
 
@@ -3461,7 +3653,7 @@ await test('the preview route answers a REAL preview, not a 500', async () => {
   const response = await callRoute(routes, '/api/memory/preview')
   assert.equal(response.status, 200, `the preview route must not fail: ${JSON.stringify(response.json)}`)
   assert.equal(response.json.available, true)
-  assert.equal(response.json.off, undefined)
+  assert.equal(response.json.mode, 'auto')
   assert.match(response.json.snapshot.text, /user knowledge/)
   assert.ok(response.json.snapshot.tokens > 0)
   assert.ok(fs.reads.length > 0, 'an unmuted preview really reads the memory files')
@@ -3469,7 +3661,7 @@ await test('the preview route answers a REAL preview, not a 500', async () => {
 
 await test('a preview of a muted session says the switch is why, without running the pass', async () => {
   const { routes, session, fs } = switchFixture()
-  await callRoute(routes, '/api/memory/switch', { method: 'POST', body: { session: session.id, off: true } })
+  await callRoute(routes, '/api/memory/switch', { method: 'POST', body: { session: session.id, mode: 'off' } })
   const reads = fs.reads.length
   const { status, json } = await callRoute(routes, '/api/memory/preview')
   assert.equal(status, 200)
@@ -3480,15 +3672,30 @@ await test('a preview of a muted session says the switch is why, without running
   assert.equal(fs.reads.length, reads, 'muted previews must not read memory files')
 })
 
+await test('a preview of a project-scoped session shows only project memory', async () => {
+  // The preview must describe the step that will really run: a project-scoped session would
+  // be lied to by a preview built from the global roots.
+  const { routes, session, fs } = switchFixture({
+    files: { [USER_MEMORY]: 'cross-project knowledge', [PROJECT_MEMORY]: 'this repository conventions' },
+  })
+  await callRoute(routes, '/api/memory/switch', { method: 'POST', body: { session: session.id, mode: 'project' } })
+  const { status, json } = await callRoute(routes, '/api/memory/preview')
+  assert.equal(status, 200)
+  assert.equal(json.mode, 'project')
+  assert.match(json.snapshot.text, /repository conventions/)
+  assert.doesNotMatch(json.snapshot.text, /cross-project knowledge/)
+  assert.ok(fs.reads.length > 0)
+})
+
 await test('a removed session id does not linger in the store forever', async () => {
-  // The store is a suppression list, so a session that no longer exists is inert: an
-  // id nobody can match simply never applies. This pins that it is not somehow
-  // applied to the CURRENT session just because it is the only entry.
-  const { listeners, services, agent } = switchFixture({
+  // The store is an override list, so a session that no longer exists is inert: an id nobody
+  // can match simply never applies. This pins that it is not somehow applied to the CURRENT
+  // session just because it is the only entry.
+  const { routes, listeners, agent } = switchFixture({
     files: { [SWITCH_STORE]: JSON.stringify({ sessions: ['session-long-gone'] }) },
   })
   assert.equal((await runPreStep(listeners, agent)).messages.length, 1, 'another session id must not mute this one')
-  assert.deepEqual(services.get('memory').status({ session: agent.session }).switchedOff, false)
+  assert.equal((await callRoute(routes, '/api/memory/status')).json.memoryMode, 'auto')
 })
 
 console.log(`\n${passed} integration tests passed`)

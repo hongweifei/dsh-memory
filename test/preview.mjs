@@ -39,13 +39,9 @@ const STATUS = {
   },
   largeFileLimit: 40000,
   pendingGenerations: 1,
-  // The session switch: the Host enumerates every live session and its state, because a
-  // route cannot resolve "the current session" (no HTTP path establishes an initiator).
-  sessions: [
-    { id: 'session-3f2a91c4-0b7e', cwd: 'D:\\code\\demo', off: false },
-    { id: 'session-8d10e5aa-46c2', cwd: 'D:\\code\\playground', off: true },
-  ],
-  memorySwitch: { available: true },
+  // The global layer the panel reports, which is what a session set to `Auto` follows. The session
+  // switch itself lives in the composer now, so no `sessions` list is published.
+  globalScopes: 'all',
   lastGeneration: { status: 'saved', turnIndex: 4, writtenFiles: [], failedFiles: [] },
   lastConsumption: {
     status: 'success',
@@ -172,6 +168,10 @@ function makeLocale(active) {
 }
 
 const locale = makeLocale(process.env.PREVIEW_LOCALE === 'zh' ? 'zh' : 'en')
+// The plugin registers TWO slots (the settings section and the composer control), so this harness
+// must pick the one it previews BY NAME. Taking the last registration silently previewed the
+// composer button instead of the page — a 2-element button where a settings panel should be.
+const wanted = 'settings.section'
 let component
 let entryOptions
 plugin.apply({
@@ -183,6 +183,7 @@ plugin.apply({
   slots: {
     inject: (_owner, callback) => callback(),
     register: (options, next) => {
+      if (options.name !== wanted) return () => {}
       component = next
       entryOptions = options
       return () => {}

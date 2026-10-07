@@ -58,6 +58,8 @@ import {
   memorySwitchStorePath,
   parseMemoryOffSessions,
   serializeMemoryOffSessions,
+  isSessionMode,
+  scopedConfig,
 } from '../lib/index.js'
 
 let passed = 0
@@ -1274,39 +1276,74 @@ test('the switch store lives under the harness home, beside the other plugin sto
   }
 })
 
-test('the switch store round-trips a session list', () => {
-  const ids = ['session-1', 'session-2']
-  const text = serializeMemoryOffSessions(ids)
+test('the switch store round-trips session modes', () => {
+  const modes = { 'session-1': 'off', 'session-2': 'project' }
+  const text = serializeMemoryOffSessions(modes)
   assert.match(text, /\n$/, 'the store is newline-terminated')
-  assert.deepEqual(parseMemoryOffSessions(text), ids)
+  assert.deepEqual(parseMemoryOffSessions(text), modes)
 })
 
-test('an empty store means nothing is muted', () => {
-  assert.deepEqual(parseMemoryOffSessions(serializeMemoryOffSessions([])), [])
+test('an empty store means every session follows the configuration', () => {
+  assert.deepEqual(parseMemoryOffSessions(serializeMemoryOffSessions({})), {})
 })
 
-test('a damaged or unexpected switch store reads as nothing muted', () => {
-  // The store only ever records SUPPRESSION, so anything unreadable must fail open:
-  // "the mute was forgotten" is recoverable, "memory went quiet everywhere" is not.
+test('the switch store never records `auto`, which IS the absence of an override', () => {
+  // Storing `auto` would PIN a session to today's configuration: a later `userScope: true`
+  // would not reach it, and the store would silently become a permission rather than a
+  // deviation. It is also what makes a lost store harmless.
+  const text = serializeMemoryOffSessions({ 'session-1': 'auto', 'session-2': 'off' })
+  assert.deepEqual(parseMemoryOffSessions(text), { 'session-2': 'off' })
+})
+
+test('a damaged or unexpected switch store reads as NO override', () => {
+  // The store only ever records a deviation from the configuration, so anything unreadable
+  // must fail open: "the override was forgotten" is recoverable, "memory went quiet
+  // everywhere and nobody can see why" is not.
   for (const text of [
     undefined,
     '',
     '   ',
     '{ not json',
-    '[]', // an array, not the expected object
     '"a string"',
     'null',
+    '[]', // the v1 shape, but with nothing in it
     '{}', // an object with no `sessions`
     JSON.stringify({ sessions: 'not an array' }),
-    JSON.stringify({ sessions: [42, null, ''] }), // only non-empty strings count
+    JSON.stringify({ sessions: { '': 'off', 'x': 'on', 'y': 'everything', 'z': 7 } }),
   ]) {
-    assert.deepEqual(parseMemoryOffSessions(text), [], `must read as nothing muted: ${String(text)}`)
+    assert.deepEqual(parseMemoryOffSessions(text), {}, `must read as no override: ${String(text)}`)
   }
 })
 
-test('the switch store de-duplicates and preserves order', () => {
-  const parsed = parseMemoryOffSessions(JSON.stringify({ sessions: ['b', 'a', 'b', 'a'] }))
-  assert.deepEqual(parsed, ['b', 'a'])
+test('a version-1 store (a bare id array) still reads, as `off`', () => {
+  // Three lines of compatibility, and the alternative is worse than the code: an upgrade
+  // must not silently UN-mute a session somebody muted.
+  assert.deepEqual(parseMemoryOffSessions(JSON.stringify({ sessions: ['b', 'a', 'b'] })), { b: 'off', a: 'off' })
+  assert.deepEqual(parseMemoryOffSessions(JSON.stringify({ version: 1, sessions: ['only'] })), { only: 'off' })
+})
+
+test('only the three known modes are accepted', () => {
+  assert.equal(isSessionMode('auto'), true)
+  assert.equal(isSessionMode('project'), true)
+  assert.equal(isSessionMode('off'), true)
+  assert.equal(isSessionMode('on'), false, 'the two-state vocabulary is gone')
+  assert.equal(isSessionMode(''), false)
+  assert.equal(isSessionMode(undefined), false)
+  assert.equal(isSessionMode(true), false)
+})
+
+test('`project` narrows the user scope and leaves the custom-root decision to `resolveRoots`', () => {
+  // `generation.roots` REPLACES the built-ins, and `resolveRoots` returns that list BEFORE it
+  // consults these flags — so narrowing is simply ignored there. Guarding on `mode` instead
+  // would fail to narrow a `custom` configuration that names no roots, which is exactly when
+  // the built-ins are still in use.
+  const config = { mode: 'native', userScope: true, projectScope: true, consumption: { maxTokens: 1 } }
+  assert.deepEqual(scopedConfig(config, 'project'), { ...config, userScope: false })
+  assert.deepEqual(scopedConfig({ ...config, mode: 'custom' }, 'project'), { ...config, mode: 'custom', userScope: false })
+  // Every other mode is the configuration itself — the SAME object, so nothing downstream can
+  // accidentally depend on a narrowed copy.
+  assert.equal(scopedConfig(config, 'auto'), config)
+  assert.equal(scopedConfig(config, 'off'), config)
 })
 
 console.log(`\n${passed} tests passed`)

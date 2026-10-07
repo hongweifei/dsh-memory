@@ -164,10 +164,12 @@ await test('the plugin exports a name, an inject list, and an apply function', (
   assert.equal(typeof plugin.apply, 'function')
 })
 
-await test('apply registers one settings.section entry named memory', () => {
+await test('apply registers the settings section and the composer control', () => {
   const { registrations, injected } = registerComponent(plugin)
-  assert.deepEqual(injected, ['settings.section'])
-  assert.equal(registrations.length, 1)
+  // Two seams: the global settings page, and the per-session control in the conversation. The
+  // session switch has to live in the composer because only that slot supplies a `sessionId`.
+  assert.deepEqual(injected, ['settings.section', 'conversation.input.left'])
+  assert.equal(registrations.length, 2)
   const { options, component } = registrations[0]
   assert.equal(options.name, 'settings.section')
   assert.equal(options.id, 'memory')
@@ -175,6 +177,15 @@ await test('apply registers one settings.section entry named memory', () => {
   assert.equal(options.locale, 'memory', 'the entry must declare its locale namespace')
   assert.equal(options.label(), 'Memory')
   assert.equal(typeof component, 'function')
+
+  const composer = registrations.find((entry) => entry.options.name === 'conversation.input.left')
+  assert.ok(composer, 'the composer control must be registered')
+  assert.equal(composer.options.id, 'memory-toggle')
+  assert.equal(composer.options.locale, 'memory')
+  // It must not collide with the shipped prompt toggle (order 40) or displace it.
+  assert.ok(composer.options.order > 40, 'the control sits after the shipped composer entries')
+  assert.equal(composer.options.label(), 'Memory in this session')
+  assert.equal(typeof composer.component, 'function')
 })
 
 /* ---------------- real server rendering ---------------- */
@@ -199,13 +210,10 @@ const STATUS = {
   memoryChange: { fileCount: 2 },
   largeFileLimit: 40000,
   pendingGenerations: 2,
-  // The session switch: the Host enumerates the live sessions and each one's state,
-  // because a route cannot resolve "the current session".
-  sessions: [
-    { id: 'session-aaaa', cwd: 'C:\\proj', off: false },
-    { id: 'session-bbbb', cwd: 'C:\\proj-two', off: true },
-  ],
-  memorySwitch: { available: true },
+  // The GLOBAL layer the panel reports, and which a session set to `Auto` follows.
+  globalScopes: 'all',
+  // The session's own mode, which the panel reports read-only (the control is in the composer).
+  memoryMode: 'auto',
   lastGeneration: { status: 'saved', turnIndex: 3, writtenFiles: [], failedFiles: [] },
   lastDream: { status: 'saved', reason: 'merged duplicates' },
   lastConsumption: {
@@ -294,6 +302,12 @@ await test('the panel renders the full status, scopes, budget, and activity', as
   // Status rows.
   assert.match(text, /enabled/)
   assert.match(text, /minPromptChars=40/)
+  // The global layer is named on the page, because it is what a session set to `Auto` follows: a
+  // panel that showed only the per-session mode would leave "Auto" undefined.
+  assert.match(text, /Global scopes\n<span>user \+ project/)
+  // And THIS session's own mode, read-only here: the control is in the composer, but a settings page
+  // that omitted it would leave a scoped session looking broken.
+  assert.match(text, /Memory in this session\n<span>Auto/)
   assert.match(text, /In-flight generations\n<span>2\n/, 'in-flight generation count must render')
   // Both scopes, their access, their paths, and their files.
   assert.match(text, /C:\\home\\\.dsh\\memory/)
@@ -510,8 +524,6 @@ await test('the trust row states the decision, not just the switch', async () =>
 
   const untrustedStatus = {
     ...STATUS,
-    // No sessions, so the only warning tone on the page is the trust row's.
-    sessions: [],
     trust: { enabled: true, trusted: false, folder: 'C:\\proj', declared: [], remembered: [], folders: [] },
   }
   const untrusted = await renderWithStatus(untrustedStatus)
@@ -550,46 +562,119 @@ await test('the trust button posts the decision and reloads', async () => {
   assert.ok(calls.filter((url) => url.includes('/status')).length >= 2)
 })
 
-await test('the session switch is a row per live session, with its own state and button', async () => {
-  const { text, json } = await renderWithStatus(STATUS)
-  // The hint explains what the switch does, because "off" alone is ambiguous.
-  assert.match(text, /One switch per session, both halves at once/)
-  // One row per session, labelled by the id the Host acts on.
-  assert.match(text, /session-aaaa/)
-  assert.match(text, /session-bbbb/)
-  // Each row states its own decision instead of relying on the button's verb.
-  const onOff = json.match(/"data-tone":"(success|warning)"/g) || []
-  assert.ok(onOff.length >= 2, 'the rows must draw a tone per session')
-  // The button offers the OPPOSITE of the current state, per row, and the id is what
-  // the row is addressed by — so it is rendered, not hidden.
-  assert.match(text, /<span>session-aaaa\n<span><span>on\n<button>Turn off/)
-  assert.match(text, /<span>session-bbbb\n<span><span>off\n<button>Turn on/)
+/**
+ * Render the COMPOSER control with effects flushed.
+ *
+ * The composer control is a separate slot registration with a different prop contract — the slot
+ * layer supplies `sessionId` — so it needs its own harness. The fake fetch answers the switch
+ * route with `payload`, and records every request.
+ */
+async function renderComposer(payload, localeId = 'en', options = {}) {
+  const calls = options.calls ?? []
+  const registration = loadBundle(async (url) => {
+    calls.push(String(url))
+    if (String(url).includes('/api/memory/switch')) {
+      if (options.mode !== undefined && String(url).startsWith('http') === false && options.posted === true) {
+        return { ok: true, json: async () => ({ ...payload, mode: options.mode }) }
+      }
+      return { ok: options.fail === true ? false : true, json: async () => (options.fail === true ? { error: 'boom' } : payload) }
+    }
+    return { ok: true, json: async () => ({ ok: true }) }
+  })
+  const clientPlugin = registration.factory((specifier) => {
+    if (specifier === 'react') return React
+    throw new Error(`unexpected external ${specifier}`)
+  })
+  const { registrations, locale } = registerComponent(clientPlugin)
+  locale.setActive(localeId)
+  const { options: slotOptions, component } = registrations.find((entry) => entry.options.name === 'conversation.input.left')
+  let renderer
+  await act(async () => {
+    renderer = TestRenderer.create(
+      React.createElement(component, { ...slotProps(locale, slotOptions), sessionId: options.sessionId ?? 'session-aaaa' }),
+    )
+  })
+  await act(async () => {
+    await Promise.resolve()
+  })
+  const text = collectText(renderer.toJSON())
+  const json = JSON.stringify(renderer.toJSON())
+  if (options.keep !== true) renderer.unmount()
+  return { text, json, renderer, locale, options: slotOptions, calls }
+}
+
+const TOGGLE = { session: 'session-aaaa', cwd: 'C:\\proj', mode: 'auto', modes: ['auto', 'project', 'off'], global: 'all' }
+
+await test('the composer control shows this session’s mode and cycles all three', async () => {
+  // The button's own text and `data-state` are the contract: the label says the CURRENT state, and
+  // the dot's tone makes it readable at a glance in a busy composer row.
+  const auto = await renderComposer(TOGGLE)
+  assert.match(auto.text, /<button><span>Auto\n/)
+  assert.match(auto.json, /"data-state":"auto"/)
+  assert.match(auto.json, /"title":"Click: Project only · Global: user \+ project"/)
+
+  const project = await renderComposer({ ...TOGGLE, mode: 'project' })
+  assert.match(project.text, /<button><span>Project only\n/)
+  assert.match(project.json, /"data-state":"project"/)
+  assert.match(project.json, /"title":"Click: Off · Global: user \+ project"/, 'the title names the NEXT state')
+
+  const off = await renderComposer({ ...TOGGLE, mode: 'off' })
+  assert.match(off.text, /<button><span>Off\n/)
+  assert.match(off.json, /"data-state":"off"/)
+  // From `off` the cycle wraps to `auto`, so one button covers all three with no menu.
+  assert.match(off.json, /"title":"Click: Auto/)
+
+  // The global layer is stated as what `auto` actually follows, so "Auto" is not a word with nothing
+  // behind it: with the global user scope off, Auto means project only.
+  const scoped = await renderComposer({ ...TOGGLE, mode: 'auto', global: 'project' })
+  assert.match(scoped.json, /Global: project only/)
 })
 
-await test('the session switch posts the named session, and reloads', async () => {
+await test('the composer control posts the CYCLE, naming its own session', async () => {
   const calls = []
-  const { renderer } = await renderWithStatus(STATUS, 'en', { keep: true, calls })
-  const buttons = renderer.root.findAll(
-    (node) => node.type === 'button' && collectText(node.props.children).trim() === 'Turn off',
-  )
-  assert.equal(buttons.length, 1, 'the only ON session offers to turn off')
+  const posted = []
+  const registration = loadBundle(async (url, init) => {
+    calls.push(String(url))
+    if (init !== undefined) posted.push({ url: String(url), body: init.body })
+    return { ok: true, json: async () => TOGGLE }
+  })
+  const clientPlugin = registration.factory((specifier) => {
+    if (specifier === 'react') return React
+    throw new Error(`unexpected external ${specifier}`)
+  })
+  const { registrations, locale } = registerComponent(clientPlugin)
+  const entry = registrations.find((item) => item.options.name === 'conversation.input.left')
+  let renderer
   await act(async () => {
-    buttons[0].props.onClick()
+    renderer = TestRenderer.create(React.createElement(entry.component, { ...slotProps(locale, entry.options), sessionId: 'session-aaaa' }))
+  })
+  await act(async () => {
+    await Promise.resolve()
+  })
+  const button = renderer.root.findAll((node) => node.type === 'button')
+  assert.equal(button.length, 1, 'the control is one button')
+  await act(async () => {
+    button[0].props.onClick()
     await Promise.resolve()
   })
   renderer.unmount()
 
-  const switchCall = calls.find((url) => url.includes('/api/memory/switch'))
-  assert.ok(switchCall, `the button must call the switch route (saw ${calls.join(', ')})`)
-  assert.ok(calls.filter((url) => url.includes('/status')).length >= 2, 'and reload the status')
+  // It READ its own session (the slot supplied the id)...
+  assert.ok(calls.some((url) => url.includes('/api/memory/switch?session=session-aaaa')), `must name its session (saw ${calls.join(', ')})`)
+  // ...and the click POSTed the NEXT state in the cycle, to that same named session.
+  assert.equal(posted.length, 1, 'exactly one write')
+  assert.equal(posted[0].url, '/api/memory/switch')
+  assert.deepEqual(JSON.parse(posted[0].body), { session: 'session-aaaa', mode: 'project' })
 })
 
-await test('the switch row carries no state when the Host sends none', async () => {
-  // An older Host (or a profile with `connection` but no `agents`) sends no `sessions`:
-  // the section must degrade to the hint, not render `undefined` rows.
-  const { text } = await renderWithStatus({ ...STATUS, sessions: undefined })
-  assert.match(text, /One switch per session/)
-  assert.doesNotMatch(text, /undefined/)
+await test('the composer control keeps a failure on the button instead of throwing', async () => {
+  // This control lives in the composer row: an exception here would take the tool row down, so a
+  // refusal (an unknown session is a 409) must be reported, not thrown.
+  const { text, json } = await renderComposer(TOGGLE, 'en', { fail: true })
+  assert.match(json, /"data-state":"error"/, 'a failure is shown as an error state')
+  assert.match(text, /<button><span>/, 'the button still renders')
+  // The reason rides on the title rather than being swallowed.
+  assert.match(json, /"title":"boom"/)
 })
 
 await test('the panel explains a jit-skipped file and an index warning', async () => {
