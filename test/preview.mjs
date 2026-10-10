@@ -25,6 +25,8 @@ const STATUS = {
   generationEnabled: true,
   consumptionEnabled: true,
   maxTokens: 2000,
+  // The legal floor for the cap, which the panel puts on its input's `min`.
+  minTokens: 1,
   overflow: 'truncate',
   failureMode: 'best_effort',
   maxOutputTokens: 0,
@@ -238,6 +240,13 @@ function toHtml(node) {
     if (key.startsWith('data-') && value !== undefined) attrs.push(`${key}="${escapeHtml(String(value))}"`)
   }
   if (props.disabled === true) attrs.push('disabled')
+  // Form controls need their OWN attributes, or the preview lies about them: without `type` a checkbox
+  // renders as an unstyled white box, and without `value`/`min` the number input shows nothing and
+  // loses its floor. The screenshot is delivery evidence, so it must carry what a browser needs.
+  if (props.type !== undefined) attrs.push(`type="${escapeHtml(String(props.type))}"`)
+  if (props.checked === true) attrs.push('checked')
+  if (tag === 'input' && props.value !== undefined) attrs.push(`value="${escapeHtml(String(props.value))}"`)
+  if (tag === 'input' && props.min !== undefined) attrs.push(`min="${escapeHtml(String(props.min))}"`)
   if (tag === 'select' && props.value !== undefined) attrs.push(`data-value="${escapeHtml(String(props.value))}"`)
   if (tag === 'textarea') attrs.push('rows="8"')
   const style = props.style

@@ -114,7 +114,7 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
       # onResult: !!js '(r) => console.log("memory", r.status)'
     consumption:
       enabled: true
-      maxTokens: 2000          # 记忆注入上限（token）；0＝一个字都不注入
+      maxTokens: 2000          # 记忆注入上限（token），必须是正整数；要一个字都不注入就 enabled: false
       overflow: truncate       # truncate（截断到放得下）| fail_query（放不下就报错）
       failureMode: best_effort # best_effort（单个文件读失败也继续）| fail_query（报错）
       # files:                 # custom 模式下替代自动发现
@@ -125,10 +125,18 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
 `shouldGenerate` 与 `onResult` 用 YAML 的 `!!js` 表达式传入（Loader 会求值成真正的函数）。
 
 **两个"预算"不要混**：`consumption.maxTokens` 是**注入**预算——每一步最多允许多少 token 的
-**记忆文本**进入上下文（0＝不注入）。它由 `render.js` 执行"宽处略、细处截"：整份放得下就全注入；
+**记忆文本**进入上下文。它由 `render.js` 执行"宽处略、细处截"：整份放得下就全注入；
 放不下就**先整文件丢弃**（按加载顺序），只剩一个时才对它做截断（最多 12 次尝试），
 截断的是索引时还会加一条提示。**模型自己的输出**上限是另一个旋钮（`generation.maxOutputTokens`），
 两者互不相干；面板的「注入预算」区把两半并排显示，就是为了不再把这两件事搞混。
+
+**上限必须是正整数**：schema 是 `natural().min(1)`、SDK 也要求正整数，所以 `0` 在配置层就被拒绝，
+根本到不了渲染层——尽管 `render.js` 确实处理 `maxTokens <= 0`。**要完全不注入就设
+`consumption.enabled: false`**。这条以前写错过（旧的面板标签和上面那行 YAML 注释都说"0＝不注入"），
+现在两边都改对了，而且那个下限是**一个共享常量**（`CONSUMPTION_MIN_TOKENS`）：schema、`/api/memory/budget`
+路由、面板输入框的 `min` 都读它，所以没有任何界面会给出一个插件随后会拒绝的值。
+
+**这个值可以在面板里直接改**（见 §21）。
 
 **`native` 与 `custom` 的差别**照 SDK 的规则：`native` 下运行时决定记什么、存哪里、何时加载，
 且**拒绝** `generation.*` / `consumption.*` 的覆盖；`custom` 只覆盖你显式给出的部分。
@@ -207,6 +215,7 @@ Qoder 的 `memory` / `memory_get` 在本插件叫 `memory_list` / `memory_read`�
 | `/memory` | 状态：作用域、信任判定、最近一次生成/消费、变更与告警明细 |
 | `/memory-switch [auto\|project\|off\|status]` | **会话级**记忆模式（见 §20）：跟随全局 / 仅项目 / 关闭 |
 | `/memory-scope [status\|all\|project\|user]` | **全局**作用域（见 §20）：每个 `auto` 会话跟随的那一层 |
+| `/memory-budget [status\|<tokens>]` | **注入上限**（见 §21）：面板里也能改，两边同一个写入器 |
 | `/memory-trust [allow\|deny\|list] [folder]` | 目录信任（写入 `<DSH_HOME>/trusted-folders.json`） |
 | `/memory-imports [status\|allow\|deny]` | **会话级**外部导入授权（授权后立即重新加载） |
 | `/memory-delete <scope>:<path>` | 删除一个记忆文件 |
@@ -221,8 +230,8 @@ Qoder 的 `memory` / `memory_get` 在本插件叫 `memory_list` / `memory_read`�
 `workspaceRegistry`；查不到工作区的项目回退成 `projectKey` 目录名，`user` 作用域本来就没有工作区），
 鼠标悬停显示它被寻址的 slug；每行还有「N 个记忆文件」+ 占用大小（宿主没给就**整段省略**，
 不显示 `undefined`、也不用横线占位），文件折叠在行下（`<details>`），展开后每个文件有**打开/删除**；
-预算行 · **注入预览** · 活动区（最近生成/巩固 + 告警）· 编辑器（作用域下拉 + 文件名 + 保存/重载/等待）·
-命令提示。中英双语，全部用真实 `--dsw-*` 主题 token。
+**注入预算区**（注入上限**可直接编辑**，见 §21）· **注入预览** · 活动区（最近生成/巩固 + 告警）·
+编辑器（作用域下拉 + 文件名 + 保存/重载/等待）· 命令提示。中英双语，全部用真实 `--dsw-*` 主题 token。
 
 **注入预览**（§9 补）回答的是"我的记忆到底进没进上下文"，而且给的是**下一步的判定**而不是事后清单：
 点一下「预览」，Host 把真实消费跑一遍再**丢掉结果**，返回四件事——`step.action`
@@ -420,9 +429,11 @@ harness 的 `fs` 服务**确实没有 delete**（`FileSystem` 抽象类只有 `r
 
 只许向下、无环，且**只有 `index.js`** 可以引用 presentation 层——`test/architecture.test.mjs` 强制。
 体积：host 模块逻辑 ≤500 行；`client.js` ≤560 逻辑 **且** ≤220 行内联数据（两份词典 + 样式表）；
-`index.js` ≤300。**当前 `client.js` 两项都用满（560/560、220/220）**，下次动面板必须先腾地方，不抬上限
-——注入预览就是这样加进来的：它取代了「最近一次消费」那行事后清单，压缩了 `qualityNotices` 里重复的
-`note`+`push`，把命令列表从独立一节并进标题行，正文用 `<details>` 折叠，**没有动上限一个字**。
+`index.js` ≤300。**当前 `client.js` 逻辑 560/560（正好用满）、内联数据 122/220**，所以下次动面板
+**必须先腾地方，不抬上限**——注入上限这个可编辑控件就是这样加进来的：它把 `ScopeCard`、编辑器工具条等
+几处 `h(...)` 的换行排版压紧（结构不变、行为不变），**没有动上限一个字**。
+更早的注入预览也是同样做法：它取代了「最近一次消费」那行事后清单，压缩了 `qualityNotices` 里重复的
+`note`+`push`，把命令列表从独立一节并进标题行，正文用 `<details>` 折叠。
 
 `consumption-plan.js` 单独存在是有原因的：面板要能回答「下一步会注入什么」而**不真的回答它**。
 决策被写成纯函数（`baselineFor` / `planInjection`），两个调用方只差一件事——真实投影**应用并记录**
@@ -474,7 +485,8 @@ node test/harness-env.mjs         # 不是测试：定位 harness 与安装位�
 
 - **两处提示词片段解不出**（见 §14），已就地声明而不是编造。
 - **索引约束只报告不阻止**：写入时检查"约 25KB"与"单行超过约 200 字符"会写进结果、日志与面板，但**不拒绝**——原实现也只在提示词里说。
-- **面板预算已满**（§15）：再加东西得先腾地方。
+- **面板逻辑行已用满**（§15）：`client.js` 逻辑 560/560，再加东西得先腾地方——**不抬上限**。
+- **只有注入上限能在面板里改**（§21）：其余配置直接改插件配置或用命令；这是刻意的取舍。
 - **删除的沙箱代价**（§13）：只读后端是主动拒绝，而不是被后端强制拦截。
 - **`projectKey` 有损**（§7）：`D:\a-b` 与 `D:\a\b` 共用一个记忆目录——这是 harness 自己的取舍，本插件继承它。
 
@@ -570,5 +582,34 @@ projectScope: false` 说成 `all` 就是把话说反了（这条有测试钉住�
 
 **全局那层怎么写的**：插件改自己的配置走 harness 的 **`configEditor.edit`**（校验、落盘、按正常 Loader 路径
 reconcile）。没有它（headless 组合）时 `/memory-scope` 会**说明**当前值并指出去配置里改，而不是假装改成功了。
+
+## 21. 在面板里改注入上限（`POST /api/memory/budget`、`/memory-budget`）
+
+**这是唯一一项可在面板里改的配置**，因为它是最常需要调的那一个：上下文紧张就调小，记忆总被截断就调大。
+面板的「注入预算」区里它是一个数字输入框 + 保存按钮（不是"每敲一下就存"——那样在输入 `1500` 的过程中
+会先把 `1` 写进去），旁边写着当前值和这条提示：
+
+> 允许进入上下文的记忆上限。要完全不注入请关掉消费开关——0 不是合法的上限。
+
+**为什么不能用 0 表示"不注入"**：schema 是 `natural().min(1)`、SDK 也要求正整数，`0` 在配置层就被拒绝，
+到不了渲染层。所以"完全不注入"的正确表达是 `consumption.enabled: false`，提示就照这么说。
+那个下限是**一个共享常量** `CONSUMPTION_MIN_TOKENS`：schema、路由、面板输入框的 `min` 都读它
+（面板拿不到 Host 模块，所以这个值随 `/status` 的 `minTokens` 下发），因此没有任何界面会给出一个插件
+随后会拒绝的值。
+
+**路由只做三件事**，每一件都有测试：
+
+1. **强制转换**：表单发的是字符串，所以整数要么是 number、要么是纯数字串。**不猜**——`Number('')` 是 0、
+   `Number(true)` 是 1、`'1e3'` 和 `'0x10'` 也都能被 `Number` 接受，这些正是"配置被悄悄改掉"的来源。
+2. **查下限**：低于 `CONSUMPTION_MIN_TOKENS` 一律 400，并在原因里说清怎么才算"不注入"。
+3. **写入**：走 `config-write.js` 的 `writeConfig`，即 harness 的 `configEditor.edit`，并且**深合并**——
+   `edit` 收到的是用户写下的原始配置，整体替换会悄悄丢掉面板不管的每一项。没有 `configEditor` 的组合
+   （headless / ACP / SDK）返回 **501**：请求没问题、值也合法，是**这个组合写不了配置**。
+
+**为什么不做成一整页可编辑设置**：试过，29 项，然后删掉了——一个把插件每个旋钮都摊开的面板，比一个
+把最常改的那一项做好的面板更难用。要改别的仍然可以直接改插件配置或问 `/memory`。
+
+**`/memory-budget` 命令**做同样的事（`/memory-budget 1500`、`/memory-budget status`），并且复用同一个
+写入器，所以命令和面板不可能给出不同的规则。
 
 

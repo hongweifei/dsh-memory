@@ -949,6 +949,7 @@ await test('every route declares methods and a buffered body', async () => {
   apply(ctx, loadConfig({
       mode: 'custom', generation: { turnComplete: { enabled: false } } }))
   assert.deepEqual([...routes.keys()].sort(), [
+    '/api/memory/budget',
     '/api/memory/file',
     '/api/memory/flush',
     '/api/memory/preview',
@@ -3753,6 +3754,86 @@ await test('a removed session id does not linger in the store forever', async ()
   })
   assert.equal((await runPreStep(listeners, agent)).messages.length, 1, 'another session id must not mute this one')
   assert.equal((await callRoute(routes, '/api/memory/status')).json.memoryMode, 'auto')
+})
+
+await test('the budget route writes the injection cap through configEditor', async () => {
+  // The one editable configuration value. Each `edit` call receives the CURRENT raw config from the
+  // Loader, so this double feeds the previous result forward — which makes the deep-merge assertion
+  // below meaningful rather than a restatement of its own input.
+  const fs = makeFs({})
+  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, loadConfig({ mode: 'custom', generation: { turnComplete: { enabled: false } } }))
+  let current = { enabled: true, consumption: { maxTokens: 2000, overflow: 'truncate' }, trust: { folders: ['x'] } }
+  const edits = []
+  services.set('configEditor', {
+    entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
+    edit: async (entry, change) => {
+      current = change(current)
+      edits.push({ entry, next: current })
+    },
+  })
+
+  // A form sends a STRING; the route coerces it and reports the coerced value.
+  const written = await callRoute(routes, '/api/memory/budget', { method: 'POST', body: { maxTokens: '1500' } })
+  assert.equal(written.status, 200)
+  assert.equal(written.json.maxTokens, 1500, 'the coerced number is reported, not the string sent')
+  assert.equal(edits.length, 1)
+  assert.equal(edits[0].entry.options.name, '@dsh-external/dsh-memory', 'the entry is found by specifier')
+  // Deep merge: the sibling keys survive, so a one-field write cannot erase the rest of the config.
+  assert.deepEqual(edits[0].next, {
+    enabled: true,
+    consumption: { maxTokens: 1500, overflow: 'truncate' },
+    trust: { folders: ['x'] },
+  })
+
+  // A number is accepted as-is, and the status route then reports the new cap.
+  const numeric = await callRoute(routes, '/api/memory/budget', { method: 'POST', body: { maxTokens: 900 } })
+  assert.equal(numeric.json.maxTokens, 900)
+})
+
+await test('the budget route refuses a value the schema would refuse, and says how to inject nothing', async () => {
+  const fs = makeFs({})
+  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, loadConfig({ mode: 'custom', generation: { turnComplete: { enabled: false } } }))
+  services.set('configEditor', {
+    entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
+    edit: async () => {
+      throw new Error('must not be called')
+    },
+  })
+
+  // 0 is the interesting one: `render.js` WOULD honour it, but the schema and the SDK both require a
+  // positive integer, so a route that accepted it would write a configuration the plugin rejects.
+  // The refusal names the real way to inject nothing.
+  const zero = await callRoute(routes, '/api/memory/budget', { method: 'POST', body: { maxTokens: 0 } })
+  assert.equal(zero.status, 400)
+  assert.match(zero.json.error, /at least 1/)
+  assert.match(zero.json.error, /turn consumption off/, 'the refusal says how to really inject nothing')
+
+  // `Number('')` is 0 and `Number(true)` is 1: neither may become a silent configuration change.
+  for (const bad of ['', '  ', 'abc', '1.5', '1e3', '0x10', true, null, undefined, -5, {}, []]) {
+    const response = await callRoute(routes, '/api/memory/budget', { method: 'POST', body: { maxTokens: bad } })
+    assert.equal(response.status, 400, `maxTokens=${JSON.stringify(bad)} must be refused`)
+  }
+  // A missing field, and a body that is not an object at all.
+  assert.equal((await callRoute(routes, '/api/memory/budget', { method: 'POST', body: {} })).status, 400)
+  assert.equal((await callRoute(routes, '/api/memory/budget', { method: 'POST', body: [] })).status, 400)
+
+  // No writer at all: 501, because the request was fine and the COMPOSITION cannot write config.
+  const bare = makeCtx(makeFs({}), makeLlm('{}'))
+  apply(bare.ctx, loadConfig({ mode: 'custom', generation: { turnComplete: { enabled: false } } }))
+  const noWriter = await callRoute(bare.routes, '/api/memory/budget', { method: 'POST', body: { maxTokens: 100 } })
+  assert.equal(noWriter.status, 501)
+  assert.match(noWriter.json.error, /no configEditor/)
+})
+
+await test('the status route publishes the legal floor for the cap', async () => {
+  // The panel needs the floor to render `min` on its input, and it cannot import a Host module — so
+  // the value rides on the status payload, from the one constant the schema also uses.
+  const { routes } = switchFixture()
+  const { json } = await callRoute(routes, '/api/memory/status')
+  assert.equal(json.minTokens, 1)
+  assert.equal(json.maxTokens, 2000)
 })
 
 console.log(`\n${passed} integration tests passed`)

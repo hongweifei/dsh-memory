@@ -60,6 +60,9 @@ import {
   serializeMemoryOffSessions,
   isSessionMode,
   scopedConfig,
+  merge,
+  CONSUMPTION_MIN_TOKENS,
+  validateMemoryConfig,
 } from '../lib/index.js'
 
 let passed = 0
@@ -1344,6 +1347,44 @@ test('`project` narrows the user scope and leaves the custom-root decision to `r
   // accidentally depend on a narrowed copy.
   assert.equal(scopedConfig(config, 'auto'), config)
   assert.equal(scopedConfig(config, 'off'), config)
+})
+
+/* ---------------- the config writer ---------------- */
+
+test('merge is DEEP, because `edit` hands over the raw config as written', () => {
+  // `configEditor.edit(entry, change)` passes what the USER wrote, which may be a small object that
+  // leaves the rest to schema defaults. Replacing it would silently drop every key the caller does
+  // not manage, so a one-field write must preserve its siblings.
+  const current = { enabled: true, consumption: { maxTokens: 2000, overflow: 'truncate' }, trust: { folders: ['x'] } }
+  assert.deepEqual(merge(current, { consumption: { maxTokens: 900 } }), {
+    enabled: true,
+    trust: { folders: ['x'] },
+    consumption: { maxTokens: 900, overflow: 'truncate' },
+  })
+  // Arrays replace wholesale: a list edited in a form is a new list, not an item-wise patch.
+  assert.deepEqual(merge({ excludes: ['a', 'b'] }, { excludes: ['c'] }), { excludes: ['c'] })
+  // A new key is added, and neither input is mutated.
+  assert.deepEqual(merge({ a: 1 }, { b: 2 }), { a: 1, b: 2 })
+  assert.deepEqual(current.consumption, { maxTokens: 2000, overflow: 'truncate' })
+  // A non-object current (a config the user wrote as `null`, or an array) is treated as empty rather
+  // than throwing: the writer must not be the thing that breaks a save.
+  assert.deepEqual(merge(null, { enabled: false }), { enabled: false })
+  assert.deepEqual(merge([1, 2], { enabled: false }), { enabled: false })
+  // Nesting deeper than one level still merges.
+  assert.deepEqual(merge({ generation: { dream: { enabled: false, minHours: 24 } } }, { generation: { dream: { enabled: true } } }), {
+    generation: { dream: { enabled: true, minHours: 24 } },
+  })
+})
+
+test('the cap floor is one shared constant, so no surface can offer an illegal value', () => {
+  // The schema, the route and the panel all read this: if they drifted, a control would offer a value
+  // the plugin then refuses — which is exactly the "0 = inject nothing" confusion this fixes.
+  assert.equal(CONSUMPTION_MIN_TOKENS, 1)
+  assert.throws(() => Config({ consumption: { maxTokens: 0 } }).consumption, /maxTokens/)
+  assert.equal(Config({ consumption: { maxTokens: 1 } }).consumption.maxTokens, 1)
+  assert.throws(() => validateMemoryConfig({ consumption: { maxTokens: 0 } }), /at least 1/)
+  assert.throws(() => validateMemoryConfig({ consumption: { maxTokens: 1.5 } }), /at least 1/)
+  validateMemoryConfig({ consumption: { maxTokens: 1 } })
 })
 
 console.log(`\n${passed} tests passed`)

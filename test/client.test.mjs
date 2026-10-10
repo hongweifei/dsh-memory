@@ -197,6 +197,8 @@ const STATUS = {
   consumptionEnabled: true,
   dreamEnabled: true,
   maxTokens: 2000,
+  // The legal floor for the cap, from the status payload so the client needs no Host import.
+  minTokens: 1,
   overflow: 'truncate',
   failureMode: 'best_effort',
   maxOutputTokens: 0,
@@ -295,7 +297,7 @@ function collectText(node) {
   return `${own}${collectText(node.children)}`
 }
 await test('the panel renders the full status, scopes, budget, and activity', async () => {
-  const { text } = await renderWithStatus(STATUS)
+  const { text, json } = await renderWithStatus(STATUS)
   // Header and description.
   assert.match(text, /Memory/)
   assert.match(text, /Qoder Agent SDK/)
@@ -319,7 +321,14 @@ await test('the panel renders the full status, scopes, budget, and activity', as
   assert.match(text, /No memory files yet\./)
   // Budget: the labels say WHAT is capped and WHICH enum values exist, because the raw
   // identifiers (`truncate`, `best_effort`) explain nothing on their own.
-  assert.match(text, /Injection cap \(0 = inject nothing\)\n<span>2000\n/)
+  //
+  // The injection cap is the ONE editable control, so it renders an input holding the current value
+  // plus a save button — attributes live in the JSON projection, since `collectText` renders tag
+  // NAMES only. The old read-only row claimed "0 = inject nothing", which the configuration never
+  // allowed; the hint now says how to really inject nothing.
+  assert.match(text, /Injection cap \(tokens\)\n<input><button>Save/)
+  assert.match(text, /How much memory may enter the context/)
+  assert.match(json, /"type":"number","className":"dshmem-input dshmem-number","min":1,"value":"2000"/)
   assert.match(text, /If it does not fit \(truncate \| fail_query\)\n<span>truncate\n/)
   assert.match(text, /If a file fails to load \(best_effort \| fail_query\)\n<span>best_effort\n/)
   // The generation side belongs in the same section: one budget without the other is how
@@ -1108,7 +1117,7 @@ await test('no user-visible string is hardcoded in the component body', () => {
 await test('the panel talks only to the /api/memory routes', () => {
   const paths = [...source.matchAll(/['"](\/api\/memory\/[a-z]+)/g)].map((match) => match[1])
   assert.ok(paths.length > 0)
-  const known = ['/api/memory/status', '/api/memory/file', '/api/memory/preview', '/api/memory/refresh', '/api/memory/flush', '/api/memory/trust', '/api/memory/switch']
+  const known = ['/api/memory/status', '/api/memory/file', '/api/memory/preview', '/api/memory/refresh', '/api/memory/flush', '/api/memory/trust', '/api/memory/switch', '/api/memory/budget']
   for (const path of paths) {
     assert.ok(known.includes(path), `unexpected route ${path}`)
   }

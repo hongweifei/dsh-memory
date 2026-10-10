@@ -42,11 +42,11 @@ for (const [name, source] of sources) {
 /** The layering this plugin intends, lowest first. */
 const LAYERS = [
   ['constants.js'],
-  ['config.js', 'tokens.js', 'fs.js', 'paths.js', 'memory-file.js'],
+  ['config.js', 'tokens.js', 'fs.js', 'paths.js', 'memory-file.js', 'config-write.js'],
   ['render.js', 'memory-pass.js', 'memory-prompt.js', 'memory-search.js', 'imports.js', 'excludes.js', 'trust.js', 'jit.js', 'transcript.js', 'failure-pause.js', 'memory-switch.js', 'project-scopes.js', 'commands-report.js'],
   ['memory-agent.js', 'consumption-plan.js'],
   ['consumption.js', 'generation.js', 'dream.js'],
-  ['service.js', 'tools.js', 'routes.js', 'commands.js', 'consumption-seam.js'],
+  ['service.js', 'tools.js', 'routes.js', 'commands.js', 'consumption-seam.js', 'budget-route.js'],
   ['index.js'],
 ]
 const layerOf = new Map()
