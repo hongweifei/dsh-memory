@@ -266,6 +266,16 @@ false: 0 | false | no  | off              // 其他值一律当"未设置"
 - **预览工具悄悄预览错了组件**：`test/preview.mjs` 取**最后一个** slot 注册，而插件在会话控件加入后有了两个；
   于是它渲染的是一个 2 元素的按钮而不是设置页（文件从 17KB 掉到 9KB）。现在**按名字**取
   `settings.section`，并有一条警告在按钮找不到时出声。
+- **每一次成功的删除都是一次"无效输出"**：`memory` 工具声明了 `output.schema`，而 harness **拿它校验每个
+  返回值**——多一个未声明的键就直接判失败：`tool "memory" returned invalid output:
+  "value.files[0].deleted" is not a declared property (additionalProperties: false)`。而删除分支返回的正是
+  `files: [{ …, deleted: true }]`，schema 里却没有这个字段。后果很有害：**文件真的被删掉了**，但模型收到的
+  是一次失败的调用，于是它既不知道删成功了、也无法据此改写索引（而删除后不改索引正是本插件明说的坑）。
+  修法是把它声明成真实（可选）属性。现在有一条测试**驱动真实的 harness 校验器**跑遍每个 action 的返回值
+  （含各失败路径），所以这一类"schema 与实现不一致"的问题不会再漏过——按 action 写断言是抓不到它的，
+  因为错的是 schema 本身。
+- **另外**：`test/integration.test.mjs` 顶部有两处早先损坏的破折号（U+FFFD 替换字符，`HEAD` 里就有），
+  已修好；仓库本来就有"任何文件不得带 CP936 损坏"的检查，但替换字符不在它认的那种形态里。
 
 ### 兼容性（核对过 harness `0.2.0-rc.2`）
 

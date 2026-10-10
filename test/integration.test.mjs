@@ -1,14 +1,16 @@
 /**
  * Integration test: drives the real apply() against mocked Harness services.
  *
- * This exercises the complete Qoder memory contract end to end �?generation,
+ * This exercises the complete Qoder memory contract end to end —generation,
  * consumption, the gate, per-file status, custom roots, result callbacks and
- * the runtime service �?without a live Host.
+ * the runtime service —without a live Host.
  *
  * Run: node test/integration.test.mjs
  */
 import assert from 'node:assert/strict'
+import { pathToFileURL } from 'node:url'
 import { apply, Config, LARGE_FILE_CHARS } from '../lib/index.js'
+import { resolveInstalled } from './harness-env.mjs'
 
 /** Pin the harness home so the user scope resolves into the fixture filesystem. */
 const HOME = 'C:\\home\\.dsh'
@@ -2263,6 +2265,61 @@ await test('the memory tool offers list, read, search and write in one schema', 
   assert.ok(definition, 'the memory tool must be registered')
   assert.deepEqual(definition.parameters.properties.action.enum, ['list', 'read', 'search', 'write', 'delete'])
   assert.ok(definition.parameters.properties.query, 'search needs a query property')
+})
+
+await test('every value the memory tool returns satisfies its own declared output schema', async () => {
+  // THE HARNESS VALIDATES THIS SCHEMA AGAINST EVERY RETURNED VALUE, and rejects an undeclared key
+  // outright: `tool "memory" returned invalid output: "value.files[0].deleted" is not a declared
+  // property (additionalProperties: false)`. That is exactly what a successful DELETE used to
+  // produce — the file really was removed, but the model was told the call was invalid, so it had
+  // no way to know what happened.
+  //
+  // Driving every action through the REAL validator is what makes this class of bug impossible:
+  // a per-action assertion could not have caught it, because the schema is what was wrong.
+  const toolsEntry = resolveInstalled('@deepseek-ai/dsh-tools')
+  if (toolsEntry === undefined) {
+    console.log('  --  (skipped: @deepseek-ai/dsh-tools is not installed here)')
+    return
+  }
+  const { validateJsonSchemaValue } = await import(pathToFileURL(toolsEntry).href)
+
+  const fs = projectMemoryFixture()
+  const { ctx, tools } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, trustConfig())
+  const agent = makeAgent(makeSession([], 'C:\\proj'))
+  const schema = tools.registered.get('memory').output.schema
+
+  // One call per action, including the failure paths and the delete that started this.
+  const calls = [
+    { action: 'list' },
+    { action: 'list', scope: 'user' },
+    { action: 'read', path: 'MEMORY.md' },
+    { action: 'read', path: 'missing.md' },
+    { action: 'search', query: 'knowledge' },
+    { action: 'write', path: 'new.md', content: '# new\n' },
+    { action: 'delete', path: 'MEMORY.md' },
+    { action: 'delete', path: 'never-existed.md' },
+    { action: 'list', path: '../escape.md' },
+  ]
+  for (const args of calls) {
+    const value = await runTool(tools, agent, args)
+    const violations = validateJsonSchemaValue(schema, value)
+    assert.deepEqual(
+      violations,
+      [],
+      `${JSON.stringify(args)} returned ${JSON.stringify(value)} — ${violations.join('; ')}`,
+    )
+  }
+
+  // The delete really did return the field that used to be undeclared, so this test would fail
+  // again if the declaration were removed.
+  const removed = await runTool(tools, agent, { action: 'read', path: 'new.md' })
+  assert.equal(removed.ok, true, 'the written file is readable')
+  const deletion = await runTool(tools, agent, { action: 'delete', path: 'new.md' })
+  assert.equal(deletion.ok, true)
+  // `scope` defaults to project, and the write above used that default too.
+  assert.deepEqual(deletion.files, [{ rootId: 'project', path: 'new.md', bytes: 0, deleted: true }])
+  assert.deepEqual(validateJsonSchemaValue(schema, deletion), [])
 })
 
 await test('the memory tool searches every scope, not just the selected one', async () => {
