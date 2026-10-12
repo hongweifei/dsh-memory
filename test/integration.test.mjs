@@ -3569,7 +3569,7 @@ await test('/memory-scope writes the global scopes through configEditor', async 
 
   // With the editor present the command offers itself, and the status row says it is writable.
   const status = await runCommand(commands, 'memory-scope')
-  assert.match(status.text, /\/memory-scope all \| project \| user/)
+  assert.match(status.text, /\/memory-scope all \| user \| project/)
 
   const scoped = await runCommand(commands, 'memory-scope', { rawInput: 'project' })
   assert.equal(scoped.kind, 'success')
@@ -3904,7 +3904,7 @@ await test('the status route publishes the scope choices and whether config is w
   // only possible answer is 501.
   const { routes, services } = switchFixture()
   const bare = await callRoute(routes, '/api/memory/status')
-  assert.deepEqual(bare.json.globalScopeChoices, ['all', 'project', 'user'])
+  assert.deepEqual(bare.json.globalScopeChoices, ['all', 'user', 'project'])
   assert.ok(!bare.json.globalScopeChoices.includes('none'), 'a state that cannot be written must not be offered')
   assert.equal(bare.json.configWritable, false, 'this fixture has no configEditor')
 

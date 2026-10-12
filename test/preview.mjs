@@ -45,7 +45,7 @@ const STATUS = {
   // switch itself lives in the composer now, so no `sessions` list is published. The scope control is
   // EDITABLE, so the panel also needs the states it may offer and whether this composition can write.
   globalScopes: 'all',
-  globalScopeChoices: ['all', 'project', 'user'],
+  globalScopeChoices: ['all', 'user', 'project'],
   configWritable: true,
   lastGeneration: { status: 'saved', turnIndex: 4, writtenFiles: [], failedFiles: [] },
   lastConsumption: {

@@ -217,7 +217,7 @@ const STATUS = {
   // The states a control may offer, and whether this composition can write config at all. Both come
   // from the Host: the bundle cannot import its vocabulary, and it must not render a Save whose only
   // possible answer is 501. The real status route always sends both.
-  globalScopeChoices: ['all', 'project', 'user'],
+  globalScopeChoices: ['all', 'user', 'project'],
   configWritable: true,
   // The session's own mode, which the panel reports read-only (the control is in the composer).
   memoryMode: 'auto',
@@ -315,7 +315,7 @@ await test('the panel renders the full status, scopes, budget, and activity', as
   assert.match(text, /Global scopes\n<select>/)
   // (collectText renders tag NAMES only, and no closing tags — so the option run is asserted without
   // one, and the select's own attributes are checked in the JSON projection below.)
-  assert.match(text, /<option>user \+ project\n<option>project only\n<option>user only\n<button>Save\n/)
+  assert.match(text, /<option>user \+ project\n<option>user\n<option>project\n<button>Save\n/)
   assert.match(text, /<button>Save\n/, 'the scope row offers a Save')  // And THIS session's own mode, read-only here: the control is in the composer, but a settings page
   // that omitted it would leave a scoped session looking broken.
   assert.match(text, /Memory in this session\n<span>Auto/)
@@ -380,7 +380,7 @@ await test('the panel degrades the scope control to read-only when this composit
   // option, so the control keeps showing the truth and the user can still leave it.
   const none = await renderWithStatus({ ...STATUS, globalScopes: 'none' })
   assert.match(none.text, /No scope is enabled\./, 'a reported-only state is explained')
-  assert.match(none.text, /<select><option>both scopes are off\n<option>user \+ project\n/, 'the current state leads the list, so the value it displays is true')
+  assert.match(none.text, /<select><option>no scopes are on\n<option>user \+ project\n/, 'the current state leads the list, so the value it displays is true')
   assert.match(none.json, /"value":"none"/, 'and it is the selected value, not a blank that falls back to option one')
   assert.match(none.text, /<button>Save\n/, 'the state is still writable, so it can be left')
 })
@@ -712,9 +712,9 @@ await test('the composer control shows this session’s mode and cycles all thre
   assert.match(off.json, /Click for Auto/)
 
   // The global layer is stated as what `auto` actually follows, so "Auto" is not a word with nothing
-  // behind it: with the global user scope off, Auto means project only.
+  // behind it: with the global user scope off, Auto names the project scope alone.
   const scoped = await renderComposer({ ...TOGGLE, mode: 'auto', global: 'project' })
-  assert.match(scoped.json, /follows the global scopes: project only/)
+  assert.match(scoped.json, /follows the global scopes: project/)
 })
 
 await test('the composer control says which of the three reasons it cannot answer', async () => {
