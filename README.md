@@ -136,10 +136,26 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
 现在两边都改对了，而且那个下限是**一个共享常量**（`CONSUMPTION_MIN_TOKENS`）：schema、`/api/memory/budget`
 路由、面板输入框的 `min` 都读它，所以没有任何界面会给出一个插件随后会拒绝的值。
 
-**这个值可以在面板里直接改**（见 §21）。
+**这个值可以在面板里直接改**（见 §21）——但**只在 `mode: custom` 下**。
 
 **`native` 与 `custom` 的差别**照 SDK 的规则：`native` 下运行时决定记什么、存哪里、何时加载，
-且**拒绝** `generation.*` / `consumption.*` 的覆盖；`custom` 只覆盖你显式给出的部分。
+且**拒绝** `generation.*` / `consumption.*` 的覆盖（只放行两个 `onResult` 回调和作用域开关）；
+`custom` 只覆盖你显式给出的部分。
+
+**`mode` 的默认值是 `native`**，所以**不写 `mode` 就等于 `native`**。这一点曾经是个严重缺陷：面板不区分模式，
+在 `native` 下也给出可编辑的注入上限；保存写进去的配置被插件自己拒绝，而**被拒绝的配置不是"没生效"**——
+`validateMemoryConfig` 在 `apply()` 里跑，Loader 重新加载时抛错，于是**插件根本没激活，记忆在所有会话里消失**。
+现在有三道闸：
+
+1. **写入前校验**（`judgeConfig`）：候选配置先过**真正的 schema** 和**真正的规则**（就是 `apply()` 用的那两个），
+   不合法就在 `configEditor.edit` 的回调里抛错——那个回调在**落盘之前**运行，所以 profile 保持原样。
+   **必须过 schema**：只看写进去的键会漏掉**默认值**（`mode` 不写就是 `native`），而那正是最常见的形态。
+2. **面板不给假控件**：`/status` 下发 `consumptionWritable`，`native` 下面板**照实显示上限值但不可编辑**，
+   并写明要改就得切到 `mode: custom`。
+3. **状态码说实话**：被插件拒绝是 **400**（调用者的请求），组合写不了配置才是 **501**（部署差异）。
+
+原始缺陷的成因值得记下：**所有写入类测试都用 `mode: custom`**，而用户的 profile 跑 `native`——那条路径从没被测过。
+现在有专门的用例走 `native`，并断言"被拒绝之后插件仍然能激活"。
 
 **与 harness 文件沙箱的关系（`writePolicy`）**：记忆按契约放在 `$DSH_HOME` 下，也就是**永远在会话
 工作区之外**。harness 的沙箱后端（`dsh-fs-sandbox` + `dsh-sandbox-policy`）按**策略**给"变更"上围栏：
@@ -432,11 +448,11 @@ harness 的 `fs` 服务**确实没有 delete**（`FileSystem` 抽象类只有 `r
 
 只许向下、无环，且**只有 `index.js`** 可以引用 presentation 层——`test/architecture.test.mjs` 强制。
 体积：host 模块逻辑 ≤500 行；`index.js` ≤300；`client.js` ≤640 逻辑 **且** ≤220 行内联数据
-（两份词典 + 样式表）。**当前 `client.js` 逻辑 593/640、内联数据 149/220。**
+（两份词典 + 样式表）。**当前 `client.js` 逻辑 604/640、内联数据 152/220。**
 
 客户端那条线是**防漂移**，不是必须凑合的额度：它拦的是面板悄悄膨胀一倍，不是"要加功能就先删点东西"。
 上一版它卡在 560/560，加全局作用域开关时我据此动过压缩和"少显示一点"的念头——用户的裁定是
-**不用为一行数自我设限**，所以上限调到当前形状之上（593），而不是把功能砍到线上。host 的 500 行仍然
+**不用为一行数自我设限**，所以上限调到当前形状之上（604），而不是把功能砍到线上。host 的 500 行仍然
 有牙齿：`routes.js` 撞线时把配置路由拆成 `config-route.js`，`index.js` 撞线时压缩了接线。
 
 `consumption-plan.js` 单独存在是有原因的：面板要能回答「下一步会注入什么」而**不真的回答它**。
@@ -632,6 +648,11 @@ node test/harness-env.mjs         # 不是测试：定位 harness 与安装位�
 501 的控件比只读更糟。这个判断来自 host（`/status` 的 `configWritable`），因为 `configEditor` 是 Host 服务，
 浏览器那半查不到。
 
+**面板不给"插件会拒绝的控件"**：`native` 模式下注入上限不可编辑（`/status` 的 `consumptionWritable` 为
+false），只显示当前值并说明切到 `mode: custom` 才能改。全局作用域在两种模式下都可写——那是 `native` 也放行
+的三个开关。这与 §3 记的那个缺陷是同一条原则：**控件不能提供插件随后会拒绝的值**，只不过"拒绝"的后果比
+想象的严重得多（插件不激活，不是设置不生效）。
+
 **历史 bug**：`/memory-scope` 之前用一串内联三元读状态，把"两个作用域都关"读成 `project`——正好说反了。
 现在读取方向也走 `describeGlobalScopes`。
 
@@ -655,20 +676,30 @@ reconcile）。没有它（headless 组合）时 `/memory-scope` 会**说明**�
 
 > 允许进入上下文的记忆上限。要完全不注入请关掉消费开关——0 不是合法的上限。
 
+**只在 `mode: custom` 下可编辑。** `native` 模式拒绝 `consumption.*`，所以那里这一行是**只读的**：照实显示
+当前值，并写明要改就得把插件切到 `mode: custom`。记得 `mode` 默认就是 `native`（§3）。这条限制是修一个
+**把插件整个弄挂**的缺陷时加的——见 §3。
+
 **为什么不能用 0 表示"不注入"**：schema 是 `natural().min(1)`、SDK 也要求正整数，`0` 在配置层就被拒绝，
 到不了渲染层。所以"完全不注入"的正确表达是 `consumption.enabled: false`，提示就照这么说。
 那个下限是**一个共享常量** `CONSUMPTION_MIN_TOKENS`：schema、路由、面板输入框的 `min` 都读它
 （面板拿不到 Host 模块，所以这个值随 `/status` 的 `minTokens` 下发），因此没有任何界面会给出一个插件
 随后会拒绝的值。
 
-**路由只做三件事**，每一件都有测试：
+**路由做四件事**，每一件都有测试：
 
 1. **强制转换**：表单发的是字符串，所以整数要么是 number、要么是纯数字串。**不猜**——`Number('')` 是 0、
    `Number(true)` 是 1、`'1e3'` 和 `'0x10'` 也都能被 `Number` 接受，这些正是"配置被悄悄改掉"的来源。
 2. **查下限**：低于 `CONSUMPTION_MIN_TOKENS` 一律 400，并在原因里说清怎么才算"不注入"。
-3. **写入**：走 `config-write.js` 的 `writeConfig`，即 harness 的 `configEditor.edit`，并且**深合并**——
-   `edit` 收到的是用户写下的原始配置，整体替换会悄悄丢掉面板不管的每一项。没有 `configEditor` 的组合
-   （headless / ACP / SDK）返回 **501**：请求没问题、值也合法，是**这个组合写不了配置**。
+3. **写入前校验**：候选配置先过**真正的 schema + 真正的规则**（`judgeConfig`），也就是 `apply()` 用的那两个。
+   不过关就在 `configEditor.edit` 的**回调里**抛错——那个回调在落盘之前跑，所以 profile 原样保留。这一步是
+   真正防住"写进去之后插件不激活"的地方；只看请求本身是不够的，因为**默认值也会违反规则**（`mode` 不写＝`native`）。
+4. **写入**：走 `config-write.js` 的 `writeConfig`，即 harness 的 `configEditor.edit`，并且**深合并**——
+   `edit` 收到的是用户写下的原始配置，整体替换会悄悄丢掉面板不管的每一项。
+
+**400 还是 501**：被插件拒绝（第 3 步）是 **400**，因为是**这个请求**的配置不合法，原因里写着怎么改；
+没有 `configEditor` 的组合（headless / ACP / SDK）才是 **501**：请求没问题、值也合法，是**这个组合**
+不具备写配置的能力。两者混用等于把调用者的错和自己的部署差异算成同一件事。
 
 **为什么不做成一整页可编辑设置**：试过，29 项，然后删掉了——一个把插件每个旋钮都摊开的面板，比一个
 把最常改的那一项做好的面板更难用。现在面板里可编辑的只有**两项**：全局作用域（§20）和注入上限。
@@ -678,8 +709,12 @@ reconcile）。没有它（headless 组合）时 `/memory-scope` 会**说明**�
 写入器，所以命令和面板不可能给出不同的规则。
 
 **两个写入器合成一个模块**：`/api/memory/budget` 和 `/api/memory/scope` 都走 `lib/config-route.js` 的
-同一段"收窄 → 拒绝 → 写入"（原来是 `budget-route.js`，加第二项时扩成 `config-route.js`）。两个路由都返回
-**501**（不是 400）当组合写不了配置时：请求没问题、值也合法，是**这个组合**不具备能力，报成客户端错误等于
-把自己的部署差异算在调用者头上。
+同一段"收窄 → 拒绝 → 写入"（原来是 `budget-route.js`，加第二项时扩成 `config-route.js`）。两者共用同一个
+`writeConfig`，所以"什么算可写"只有一个答案：`refused` → 400，`unwritable` → 501。
+
+**规则只有一份**：`config-rules.js` 里是 `validateMemoryConfig` 和 `isOverridable`，`scopes.js` 里是作用域
+词表。二者都是**叶子模块**（不 import 任何东西），所以 loader 路径、写入路径、路由和面板读的是同一份，
+不存在"第二份规则慢慢和第一份漂开"。`config-write.js` 排在 schema **之上**是有意的：它必须能问
+`apply()` 问的那个问题，所以它用的是真正的 `Config`，不是手搓的近似。
 
 

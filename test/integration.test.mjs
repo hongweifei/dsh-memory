@@ -3857,12 +3857,19 @@ await test('the budget route writes the injection cap through configEditor', asy
   const fs = makeFs({})
   const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
   apply(ctx, loadConfig({ mode: 'custom', generation: { turnComplete: { enabled: false } } }))
-  let current = { enabled: true, consumption: { maxTokens: 2000, overflow: 'truncate' }, trust: { folders: ['x'] } }
+  // The stored config carries an explicit `mode: custom`, because that is the mode a cap is writable
+  // in: the schema defaults `mode` to `native`, which refuses it, so a config that simply omits the
+  // key is one this write must refuse. (Leaving `mode` out here is exactly how the fixture used to
+  // hide the defect — the doubled `edit` never ran the real rules, so a `native` default never bit.)
+  let current = { enabled: true, mode: 'custom', consumption: { maxTokens: 2000, overflow: 'truncate' }, trust: { folders: ['x'] } }
   const edits = []
   services.set('configEditor', {
     entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
     edit: async (entry, change) => {
-      current = change(current)
+      // The real signature is `(current, inherited)`; pass BOTH so the double exercises the same call
+      // the harness makes. An ignored second argument would hide a guard that depends on the inherited
+      // layer (a `mode: native` supplied from BELOW this entry, not by the patch).
+      current = change(current, {})
       edits.push({ entry, next: current })
     },
   })
@@ -3876,6 +3883,7 @@ await test('the budget route writes the injection cap through configEditor', asy
   // Deep merge: the sibling keys survive, so a one-field write cannot erase the rest of the config.
   assert.deepEqual(edits[0].next, {
     enabled: true,
+    mode: 'custom',
     consumption: { maxTokens: 1500, overflow: 'truncate' },
     trust: { folders: ['x'] },
   })
@@ -3930,6 +3938,88 @@ await test('the status route publishes the legal floor for the cap', async () =>
   assert.equal(json.maxTokens, 2000)
 })
 
+await test('writing the cap in `native` mode is REFUSED, and the plugin keeps activating', async () => {
+  // Reported from a live profile, and the worst defect this plugin has had: the panel offered an
+  // editable cap while the profile ran `mode: native`, where the SDK accepts only the two `onResult`
+  // callbacks. The write went through `configEditor.edit` → the Loader reconciled → `apply()` threw
+  // from `validateMemoryConfig` → **the plugin failed to ACTIVATE**, so memory disappeared from every
+  // session in that profile rather than just losing a setting.
+  //
+  // Two things are pinned here, and the second is the one that matters:
+  //   1. the write is refused with 400 and a reason that names the way out, and
+  //   2. the refused configuration was NEVER PERSISTED, so `apply()` still succeeds on the config
+  //      that is on disk.
+  const fs = makeFs({})
+  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  const nativeConfig = { mode: 'native', userScope: true, projectScope: true }
+  apply(ctx, loadConfig(nativeConfig))
+
+  // A real `edit`: `change` is called first and its RESULT is what would be persisted.
+  let persisted = { ...nativeConfig }
+  let called = 0
+  services.set('configEditor', {
+    entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
+    edit: async (entry, change) => {
+      called += 1
+      // The harness persists only what the callback RETURNS, so a throw leaves the file untouched.
+      // Passing the inherited layer (`{}` here) matches the real call signature.
+      persisted = change(persisted, {})
+    },
+  })
+
+  const refused = await callRoute(routes, '/api/memory/budget', { method: 'POST', body: { maxTokens: 1500 } })
+  assert.equal(refused.status, 400, 'a configuration the plugin refuses is the CALLER’s error, not a 501')
+  assert.match(refused.json.error, /mode "native" only accepts/, 'the reason is the plugin’s own')
+  assert.match(refused.json.error, /mode: custom/, 'and it names the way out')
+  assert.equal(called, 1, 'the edit ran, and threw before persisting')
+  assert.deepEqual(persisted, nativeConfig, 'NOTHING was persisted, so the working config survives')
+
+  // The proof that matters: the plugin still activates on what is on disk. Before the fix this threw.
+  const again = makeCtx(makeFs({}), makeLlm('{}'))
+  apply(again.ctx, loadConfig(persisted))
+  assert.equal(
+    (await callRoute(again.routes, '/api/memory/status')).json.maxTokens,
+    2000,
+    'the plugin still loads, with its own default cap',
+  )
+})
+
+await test('the same write SUCCEEDS in `custom` mode, where the plugin accepts it', async () => {
+  // Without this, the test above would also pass on a write path that refused everything.
+  const fs = makeFs({})
+  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, loadConfig({ mode: 'custom', generation: { turnComplete: { enabled: false } } }))
+  let persisted = { mode: 'custom', userScope: true, projectScope: true, consumption: { overflow: 'truncate' } }
+  services.set('configEditor', {
+    entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
+    edit: async (entry, change) => {
+      persisted = change(persisted, {})
+    },
+  })
+
+  const written = await callRoute(routes, '/api/memory/budget', { method: 'POST', body: { maxTokens: 1500 } })
+  assert.equal(written.status, 200)
+  assert.equal(written.json.maxTokens, 1500)
+  assert.equal(persisted.consumption.maxTokens, 1500)
+  // And the persisted result is one the plugin accepts — checked the same way the Loader would.
+  apply(makeCtx(makeFs({}), makeLlm('{}')).ctx, loadConfig(persisted))
+})
+
+await test('the status payload says whether the cap is writable in this mode', async () => {
+  // The panel cannot work this out for itself: `mode` is a Host fact, and the rule that maps it to
+  // "which fields may be written" lives in the Host. So it rides with the payload, like `minTokens`.
+  //
+  // A native fixture must be genuinely native-legal: `switchFixture` writes `turnComplete`, which
+  // native refuses, so this builds its own context rather than bending the shared fixture.
+  const build = (mode) => {
+    const made = makeCtx(makeFs({ [USER_MEMORY]: 'user knowledge' }), makeLlm('{}'))
+    apply(made.ctx, loadConfig(mode === 'native' ? { mode } : { mode: 'custom', generation: { turnComplete: { enabled: false } } }))
+    return made
+  }
+  assert.equal((await callRoute(build('native').routes, '/api/memory/status')).json.consumptionWritable, false)
+  assert.equal((await callRoute(build('custom').routes, '/api/memory/status')).json.consumptionWritable, true)
+})
+
 await test('the scope route writes the global layer, through the SAME writer as /memory-scope', async () => {
   // The panel and the command must not be able to disagree about what `project` means, so both go
   // through `scopeFields` in one module. This drives the route and asserts the exact flags that land.
@@ -3941,7 +4031,10 @@ await test('the scope route writes the global layer, through the SAME writer as 
   services.set('configEditor', {
     entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
     edit: async (entry, change) => {
-      current = change(current)
+      // The real signature is `(current, inherited)`; pass BOTH so the double exercises the same call
+      // the harness makes. An ignored second argument would hide a guard that depends on the inherited
+      // layer (a `mode: native` supplied from BELOW this entry, not by the patch).
+      current = change(current, {})
       edits.push({ entry, next: current })
     },
   })

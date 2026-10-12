@@ -199,6 +199,9 @@ const STATUS = {
   maxTokens: 2000,
   // The legal floor for the cap, from the status payload so the client needs no Host import.
   minTokens: 1,
+  // Whether `consumption.*` may be written here at all: `mode: native` refuses every override, so the
+  // panel must report the value without offering an edit. The real status route always sends this.
+  consumptionWritable: true,
   overflow: 'truncate',
   failureMode: 'best_effort',
   maxOutputTokens: 0,
@@ -383,6 +386,34 @@ await test('the panel degrades the scope control to read-only when this composit
   assert.match(none.text, /<select><option>no scopes are on\n<option>user \+ project\n/, 'the current state leads the list, so the value it displays is true')
   assert.match(none.json, /"value":"none"/, 'and it is the selected value, not a blank that falls back to option one')
   assert.match(none.text, /<button>Save\n/, 'the state is still writable, so it can be left')
+})
+
+await test('the panel reports the cap without offering an edit `native` mode would refuse', async () => {
+  // The defect this pins, reported from a live profile: the panel offered an editable cap in
+  // `mode: native`, where the SDK accepts only the two `onResult` callbacks. Saving wrote a
+  // configuration the plugin rejects, and a rejected configuration does not merely fail to apply —
+  // `validateMemoryConfig` runs inside `apply()`, so the plugin FAILED TO ACTIVATE and memory
+  // vanished from every session. The value is still reported; only the edit is withheld.
+  const { text, json } = await renderWithStatus({ ...STATUS, mode: 'native', consumptionWritable: false })
+  assert.match(text, /Injection cap \(tokens\)\n<span>2000/, 'the value must still be REPORTED')
+  // Precisely: the CAP's editable box is gone. (The scope row has its own Save, so "no Save anywhere"
+  // would be the wrong assertion — and would have been a test that passes for the wrong reason.)
+  assert.doesNotMatch(json, /"type":"number"/, 'no editable box at all')
+  assert.doesNotMatch(json, /dshmem-number/, 'and not the number-input class either')
+  // The note names the way out, so "why is this grey" has an answer on the page.
+  assert.match(text, /Read-only in mode "native"/)
+  assert.match(text, /mode: custom/, 'and it says which mode unlocks it')
+
+  const zh = await renderWithStatus({ ...STATUS, mode: 'native', consumptionWritable: false }, 'zh')
+  assert.match(zh.text, /「native」模式下这一项是只读的/, 'the explanation must be translated')
+})
+
+await test('the panel keeps the cap editable wherever the plugin accepts it', async () => {
+  // The counterpart: in `custom` mode the cap is writable, so the control must be there. Without this
+  // the test above would pass on a panel that never offered the edit at all.
+  const { json } = await renderWithStatus({ ...STATUS, mode: 'custom', consumptionWritable: true })
+  assert.match(json, /"type":"number"/)
+  assert.doesNotMatch(json, /Read-only in mode/)
 })
 
 await test('the panel saves the global scopes through the scope route', async () => {

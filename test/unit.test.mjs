@@ -64,6 +64,8 @@ import {
   scopedConfig,
   SESSION_MODES,
   merge,
+  judgeConfig,
+  isOverridable,
   CONSUMPTION_MIN_TOKENS,
   GLOBAL_SCOPE_CHOICES,
   scopeFields,
@@ -1420,6 +1422,52 @@ test('merge is DEEP, because `edit` hands over the raw config as written', () =>
   assert.deepEqual(merge({ generation: { dream: { enabled: false, minHours: 24 } } }, { generation: { dream: { enabled: true } } }), {
     generation: { dream: { enabled: true, minHours: 24 } },
   })
+})
+
+test('isOverridable is the ONE expression of what `native` refuses', () => {
+  // The validator, the write path's pre-flight check and the panel's status payload all read this. A
+  // second copy is exactly how a control comes to offer a value the plugin then rejects — which is the
+  // defect this fixes: the panel offered an editable cap in `native` mode, the write persisted, and
+  // `apply()` then threw so the plugin never activated.
+  assert.equal(isOverridable('native', 'onResult'), true, 'the result callback is the one allowed override')
+  assert.equal(isOverridable('native', 'maxTokens'), false)
+  assert.equal(isOverridable('native', 'prompt'), false)
+  assert.equal(isOverridable('native', 'enabled'), false)
+  // Everything is overridable in `custom`, which is the mode whose entire purpose is overriding.
+  for (const key of ['onResult', 'maxTokens', 'prompt', 'roots', 'enabled']) {
+    assert.equal(isOverridable('custom', key), true, `custom must accept ${key}`)
+  }
+})
+
+test('judgeConfig judges the EFFECTIVE configuration, not the patch alone', () => {
+  // The rule that matters: `native` refuses `consumption.*`. Whether that rule is violated can depend
+  // on a layer the patch never mentions — the entry may write only the cap while a layer BELOW it
+  // supplies `mode: native`. Judging `next` in isolation would see no `mode` at all, and `native` is
+  // the default (both of the schema and of this plugin), so the guard has to merge the layers before
+  // deciding. That is the whole reason it takes `inherited`.
+  const capOnly = { consumption: { maxTokens: 1500 } }
+
+  // Inherited native refuses it...
+  assert.match(judgeConfig(capOnly, { mode: 'native' }), /mode "native" only accepts/)
+  // ...and so does a patch that sets native itself, where the refusal can say so.
+  assert.match(judgeConfig({ mode: 'native', consumption: { maxTokens: 1 } }, {}), /only accepts/)
+  // A cap with no mode anywhere is judged against the DEFAULT, which is `native` — so it is refused
+  // too. (An earlier draft asserted the opposite; this is the case that proved the guard must run the
+  // REAL schema: checking a raw `mode === 'native'` misses the default entirely, and the default is
+  // what most profiles use.)
+  assert.match(judgeConfig(capOnly, {}), /only accepts/, 'an omitted mode defaults to native')
+
+  // A combination that IS acceptable stays acceptable, so the guard is not a blanket refusal.
+  assert.equal(judgeConfig({ mode: 'custom', consumption: { maxTokens: 1500 } }, {}), undefined)
+  assert.equal(judgeConfig(capOnly, { mode: 'custom' }), undefined, 'an inherited custom mode permits the cap')
+  assert.equal(judgeConfig({ mode: 'native', consumption: { onResult: () => {} } }, {}), undefined)
+
+  // The floor is enforced here too, so the write path cannot persist `0` — and it is the SCHEMA that
+  // catches it first, which is the point of running the real one: the refusal a caller sees is the
+  // same one the Loader would raise, not a paraphrase of it.
+  assert.match(judgeConfig({ mode: 'custom', consumption: { maxTokens: 0 } }, {}), /maxTokens/)
+  assert.match(judgeConfig({ mode: 'custom', consumption: { maxTokens: -5 } }, {}), /maxTokens/)
+  assert.equal(judgeConfig({ mode: 'custom', consumption: { maxTokens: 1 } }, {}), undefined, 'the floor itself is legal')
 })
 
 test('the cap floor is one shared constant, so no surface can offer an illegal value', () => {

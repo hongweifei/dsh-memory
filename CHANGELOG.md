@@ -332,6 +332,20 @@ false: 0 | false | no  | off              // 其他值一律当"未设置"
   修法是把它声明成真实（可选）属性。现在有一条测试**驱动真实的 harness 校验器**跑遍每个 action 的返回值
   （含各失败路径），所以这一类"schema 与实现不一致"的问题不会再漏过——按 action 写断言是抓不到它的，
   因为错的是 schema 本身。
+- **在 `mode: native` 下保存注入上限会让插件整个不激活**（用户实测报告，本轮修）。面板不区分模式，
+  在 `native` 下也给出可编辑的注入上限；而 SDK 规则在 `native` 下**拒绝** `consumption.*`，只放行两个
+  `onResult` 回调和作用域开关。保存写进去的配置被插件自己拒绝，而**被拒绝的配置不是"没生效"**——
+  `validateMemoryConfig` 在 `apply()` 里跑，Loader 重新加载时抛错，于是插件**根本没激活**，记忆在所有
+  会话里消失，日志就是那句 `1 entry did not activate memory (…): Error: memory: mode "native" only
+  accepts generation.onResult and consumption.onResult`。`mode` 的默认值**就是** `native`，所以"不写
+  `mode`"的 profile 全在这个坑里。**没被测试抓到是因为所有写入类测试都用 `mode: 'custom'`**。
+  修法三道闸：**写入前校验**（`judgeConfig` 把候选配置先过**真正的 schema + 真正的规则**，不过关就在
+  `configEditor.edit` 的**回调里**抛错——那个回调在落盘之前跑，profile 保持原样；**必须过 schema**，
+  因为只看写入的键会漏掉**默认值**，第一版修复就是栽在这里、被单元测试顶出来的）；**面板不给假控件**
+  （`/status` 新增 `consumptionWritable`，`native` 下照实显示但不可编辑，并说明切到 `mode: custom`
+  才能改）；**400 与 501 分开**（被插件拒绝是调用者的请求问题，组合没有写入器才是部署差异）。
+  规则同时收进两个**叶子模块** `config-rules.js` / `scopes.js`，`config-write.js` 因此排到 schema
+  **之上**——它必须能问 `apply()` 问的那个问题。
 - **另外**：`test/integration.test.mjs` 顶部有两处早先损坏的破折号（U+FFFD 替换字符，`HEAD` 里就有），
   已修好；仓库本来就有"任何文件不得带 CP936 损坏"的检查，但替换字符不在它认的那种形态里。
 
@@ -410,6 +424,6 @@ agent 18 / package-shape 10 / resolveMeta 4。跑法见 README §16；其中依�
 - `client.js` 的体积检查是**防漂移**而非必须凑合的额度。它先前卡在 560/560，注入预览与注入上限
   都是在"不抬上限"的前提下挤进去的（取代事后消费清单、压掉 `qualityNotices` 里重复的 `note`+`push`、
   命令列表并进标题行、正文折叠）。加全局作用域开关时用户裁定**不为一行数自我设限**，上限因此调到
-  当前形状之上（逻辑 593/640、内联数据 149/220）。Host 的 500 行限制不变，仍有牙齿。
+  当前形状之上（逻辑 604/640、内联数据 152/220）。Host 的 500 行限制不变，仍有牙齿。
 - 删除的沙箱代价：插件自己的 `node:fs` 调用不被 confining 后端拦截，所以只读后端是**主动拒绝**。
 - `projectKey` 有损：`D:\a-b` 与 `D:\a\b` 共用一个记忆目录——harness 自己的取舍，本插件继承。

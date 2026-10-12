@@ -42,7 +42,15 @@ for (const [name, source] of sources) {
 /** The layering this plugin intends, lowest first. */
 const LAYERS = [
   ['constants.js'],
-  ['config.js', 'tokens.js', 'fs.js', 'paths.js', 'memory-file.js', 'config-write.js'],
+  // The rules, in their own leaf layer so BOTH the loader path and the write path can read them: the
+  // write path has to be able to ask "would the plugin accept this?" before persisting, and a
+  // configuration the plugin rejects does not fail to apply — it makes the plugin fail to activate.
+  ['config-rules.js', 'scopes.js'],
+  ['config.js', 'tokens.js', 'fs.js', 'paths.js', 'memory-file.js'],
+  // The write path sits ABOVE the schema on purpose: to refuse a configuration before persisting it,
+  // it must ask the same question `apply()` asks, which means the real schema and the real rules.
+  // A hand-rolled approximation here is what missed the `native` default (see `judgeConfig`).
+  ['config-write.js'],
   ['render.js', 'memory-pass.js', 'memory-prompt.js', 'memory-search.js', 'imports.js', 'excludes.js', 'trust.js', 'jit.js', 'transcript.js', 'failure-pause.js', 'memory-switch.js', 'project-scopes.js', 'commands-report.js'],
   ['memory-agent.js', 'consumption-plan.js'],
   ['consumption.js', 'generation.js', 'dream.js'],

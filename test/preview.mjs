@@ -27,6 +27,9 @@ const STATUS = {
   maxTokens: 2000,
   // The legal floor for the cap, which the panel puts on its input's `min`.
   minTokens: 1,
+  // `mode: native` refuses every `consumption.*` override, so the cap is reported but not editable
+  // there. This preview shows the editable case.
+  consumptionWritable: true,
   overflow: 'truncate',
   failureMode: 'best_effort',
   maxOutputTokens: 0,
