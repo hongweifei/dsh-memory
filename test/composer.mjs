@@ -29,7 +29,7 @@ new Function('window', 'require', 'fetch', source)(
   async () => ({ ok: true, json: async () => payload }),
 )
 
-const payload = { session: 'session-3f2a91c4', cwd: 'D:\\code\\demo', mode: MODE, modes: ['auto', 'project', 'off'], global: 'all' }
+const payload = { session: 'session-3f2a91c4', cwd: 'D:\\code\\demo', mode: MODE, modes: ['auto', 'all', 'user', 'project', 'off'], global: 'all' }
 const plugin = registration.factory((specifier) => {
   if (specifier === 'react') return React
   throw new Error(`unexpected external ${specifier}`)
@@ -75,7 +75,7 @@ const found = renderer.root.findAll((node) => node.type === 'button')
 const props = found[0] === undefined ? null : found[0].props
 const t = locale.bind('memory')
 const verb = (name) => t('mode' + name.charAt(0).toUpperCase() + name.slice(1))
-const modes = ['auto', 'project', 'off']
+const modes = ['auto', 'all', 'user', 'project', 'off']
 const next = modes[(modes.indexOf(MODE) + 1) % modes.length]
 console.log(`[${active}] mode=${MODE}`)
 console.log(`  label   ${props === null ? '(no button)' : props['aria-label']}`)

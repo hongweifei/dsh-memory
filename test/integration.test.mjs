@@ -3356,6 +3356,31 @@ await test('a muted session drops memory already queued in its inbox', async () 
   assert.equal(decision.messages.length, 0)
 })
 
+await test('every storable mode reaches the DISK and comes back — a real round trip', async () => {
+  // The store has two halves (serialize on write, parse on read) and a test that seeds the FILE only
+  // exercises the second one. Here the write half runs for real: set the mode, read what actually
+  // landed on disk, then boot a FRESH plugin against that exact content. A state the serializer
+  // filters out — which is how a hand-written pair list breaks a newly added mode — would be written,
+  // silently dropped, and leave the session following the configuration after a restart.
+  for (const mode of ['all', 'user', 'project', 'off']) {
+    const first = switchFixture()
+    const service = first.services.get('memory')
+    await service.setMemorySwitch(first.agent.session, mode)
+    // Read the bytes the plugin actually wrote, not a fixture shaped like them.
+    const onDisk = first.fs.files.get(SWITCH_STORE)
+    assert.equal(typeof onDisk, 'string', `${mode} must be written to the store`)
+    assert.equal(JSON.parse(onDisk).sessions['session-1'], mode, `${mode} must survive serialization`)
+
+    // Boot again against exactly that content: this is the restart case.
+    const restarted = switchFixture({ files: { [SWITCH_STORE]: onDisk } })
+    assert.equal(
+      (await callRoute(restarted.routes, '/api/memory/status')).json.memoryMode,
+      mode,
+      `${mode} must survive a restart through the store's own bytes`,
+    )
+  }
+})
+
 await test('turning the switch back on injects again, and is persisted', async () => {
   const { fs, listeners, services, agent } = switchFixture({
     files: { [SWITCH_STORE]: JSON.stringify({ sessions: ['session-1'] }) },
@@ -3498,6 +3523,74 @@ await test('the mode survives a restart, and a v1 store still mutes', async () =
 
   const legacy = switchFixture({ files: { [SWITCH_STORE]: JSON.stringify({ sessions: ['session-1'] }) } })
   assert.equal((await callRoute(legacy.routes, '/api/memory/status')).json.memoryMode, 'off')
+
+  // The new scope states persist too. This is the case a hand-written "project or off" filter in
+  // the store used to break: the mode was written, then dropped on the way back in, so the session
+  // silently reverted to following the configuration after a restart.
+  for (const mode of ['all', 'user']) {
+    const stored = switchFixture({
+      files: { [SWITCH_STORE]: JSON.stringify({ version: 2, sessions: { 'session-1': mode } }) },
+    })
+    assert.equal((await callRoute(stored.routes, '/api/memory/status')).json.memoryMode, mode, `${mode} must survive a restart`)
+  }
+})
+
+await test('`user` mode narrows the OPPOSITE scope from `project`', async () => {
+  // The two scoped modes must not be interchangeable. `user` keeps cross-project knowledge and drops
+  // this project's; `project` does the reverse. A copy-paste in the flag mapping would give a
+  // "user only" session its project's notes, and every test of `project` alone would still pass.
+  const fixture = switchFixture({ files: { [USER_MEMORY]: 'cross-project knowledge', [PROJECT_MEMORY]: 'repository conventions' } })
+  const service = fixture.services.get('memory')
+  await service.setMemorySwitch(fixture.agent.session, 'user')
+
+  const preview = await callRoute(fixture.routes, '/api/memory/preview')
+  assert.equal(preview.status, 200)
+  assert.match(preview.json.snapshot.text, /cross-project knowledge/, 'the user scope must be loaded')
+  assert.doesNotMatch(preview.json.snapshot.text, /repository conventions/, 'the project scope must be withheld')
+  // The identity the preview reports is the narrowed one, so the panel is describing the same
+  // session the next step will run.
+  assert.equal(preview.json.mode, 'user')
+})
+
+await test('`all` mode WIDENS a globally project-only session back to both scopes', async () => {
+  // This is why `all` exists as its own state: `auto` follows the configuration, so a session in a
+  // globally project-only setup had no way to opt back IN to the shared user notes. `all` does that.
+  const fixture = switchFixture({
+    config: { userScope: false, projectScope: true },
+    files: { [USER_MEMORY]: 'cross-project knowledge', [PROJECT_MEMORY]: 'repository conventions' },
+  })
+  const service = fixture.services.get('memory')
+
+  // Under `auto` the global layer withholds the user scope...
+  const auto = await callRoute(fixture.routes, '/api/memory/preview')
+  assert.doesNotMatch(auto.json.snapshot.text, /cross-project knowledge/, 'auto follows the global layer')
+
+  // ...and `all` puts it back, for this session only.
+  await service.setMemorySwitch(fixture.agent.session, 'all')
+  const widened = await callRoute(fixture.routes, '/api/memory/preview')
+  assert.equal(widened.status, 200)
+  assert.match(widened.json.snapshot.text, /cross-project knowledge/, 'all must widen the session back to the user scope')
+  assert.match(widened.json.snapshot.text, /repository conventions/)
+  assert.equal(widened.json.mode, 'all')
+
+  // The global configuration itself was not touched: this is a per-session decision.
+  const status = await callRoute(fixture.routes, '/api/memory/status')
+  assert.equal(status.json.globalScopes, 'project', 'the global layer must be unchanged')
+})
+
+await test('`all` is not a way around `off`: a muted session stays muted', async () => {
+  // The states are alternatives, so the gate must read the SESSION's state rather than any scope
+  // flag. If `all` merely set two booleans without consulting the mute, a muted session could be
+  // un-muted by a scope change.
+  const fixture = switchFixture({ files: { [USER_MEMORY]: 'cross-project knowledge' } })
+  const service = fixture.services.get('memory')
+  await service.setMemorySwitch(fixture.agent.session, 'off')
+  const muted = await runPreStep(fixture.listeners, fixture.agent)
+  assert.equal(muted.messages.length, 0, 'off injects nothing')
+
+  await service.setMemorySwitch(fixture.agent.session, 'all')
+  const widened = await runPreStep(fixture.listeners, fixture.agent)
+  assert.equal(widened.messages.length, 1, 'and a scope change is a real un-mute, so it injects again')
 })
 
 await test('/memory-switch reports and changes the mode, and /memory states it', async () => {
@@ -3647,11 +3740,11 @@ await test('the switch route sets a NAMED session and refuses an unknown one', a
   assert.equal(implied.status, 200)
   assert.equal(implied.json.session, 'session-1')
 
-  // A body without a known mode is a client error, not a default — and the two-state
-  // vocabulary is gone, so `on` is refused rather than guessed at.
+  // A body without a known mode is a client error, not a default — the refusal names every legal
+  // mode, read from the one list, so adding a state cannot leave this message behind.
   const missing = await callRoute(routes, '/api/memory/switch', { method: 'POST', body: { session: session.id } })
   assert.equal(missing.status, 400)
-  assert.match(missing.json.error, /mode must be one of auto, project, off/)
+  assert.match(missing.json.error, /mode must be one of auto, all, user, project, off/)
   const twoState = await callRoute(routes, '/api/memory/switch', {
     method: 'POST',
     body: { session: session.id, off: true },
@@ -3669,7 +3762,7 @@ await test('the switch route READS one session, for the composer', async () => {
   assert.equal(found.status, 200)
   assert.equal(found.json.session, 'session-1')
   assert.equal(found.json.mode, 'auto')
-  assert.deepEqual(found.json.modes, ['auto', 'project', 'off'])
+  assert.deepEqual(found.json.modes, ['auto', 'all', 'user', 'project', 'off'])
   assert.equal(found.json.cwd, 'C:\\proj')
 
   // A named session that does not exist is refused, exactly as on the write side, so the

@@ -11,6 +11,7 @@ import { deleteGuarded, memoryGuard, readVersioned } from '../lib/fs.js'
 import { FAILURE_PAUSE_DEFAULT, advanceFailurePause, pausedOutcome, resumePaused } from '../lib/failure-pause.js'
 import { collectTouchedPaths, isJitActive, jitDecision, parseJitTrigger } from '../lib/jit.js'
 import { indexWarnings } from '../lib/memory-file.js'
+import { GLOBAL_CONSEQUENCE, MODE_CONSEQUENCE } from '../lib/commands-report.js'
 import {
   Config,
   estimateMessage,
@@ -59,7 +60,9 @@ import {
   parseMemoryOffSessions,
   serializeMemoryOffSessions,
   isSessionMode,
+  isStoredSessionMode,
   scopedConfig,
+  SESSION_MODES,
   merge,
   CONSUMPTION_MIN_TOKENS,
   GLOBAL_SCOPE_CHOICES,
@@ -1282,11 +1285,19 @@ test('the switch store lives under the harness home, beside the other plugin sto
   }
 })
 
-test('the switch store round-trips session modes', () => {
-  const modes = { 'session-1': 'off', 'session-2': 'project' }
+test('the switch store round-trips EVERY storable session mode', () => {
+  // Every mode the UI can set must survive a write+read round trip. A hand-written pair list
+  // ("project" or "off") used to do this filtering, so a newly added state would be written by
+  // `setMode` and then silently dropped on the way back in — the session would quietly revert to
+  // following the configuration after a restart.
+  const modes = { 'session-1': 'off', 'session-2': 'project', 'session-3': 'user', 'session-4': 'all' }
   const text = serializeMemoryOffSessions(modes)
   assert.match(text, /\n$/, 'the store is newline-terminated')
   assert.deepEqual(parseMemoryOffSessions(text), modes)
+  // One at a time too, so a state that only works beside another cannot hide a gap.
+  for (const mode of ['all', 'user', 'project', 'off']) {
+    assert.deepEqual(parseMemoryOffSessions(serializeMemoryOffSessions({ s: mode })), { s: mode }, `${mode} must round-trip`)
+  }
 })
 
 test('an empty store means every session follows the configuration', () => {
@@ -1328,28 +1339,60 @@ test('a version-1 store (a bare id array) still reads, as `off`', () => {
   assert.deepEqual(parseMemoryOffSessions(JSON.stringify({ version: 1, sessions: ['only'] })), { only: 'off' })
 })
 
-test('only the three known modes are accepted', () => {
-  assert.equal(isSessionMode('auto'), true)
-  assert.equal(isSessionMode('project'), true)
-  assert.equal(isSessionMode('off'), true)
+test('only the five known modes are accepted, and `auto` is the only one never stored', () => {
+  for (const mode of ['auto', 'all', 'user', 'project', 'off']) {
+    assert.equal(isSessionMode(mode), true, `${mode} must be a mode`)
+  }
   assert.equal(isSessionMode('on'), false, 'the two-state vocabulary is gone')
   assert.equal(isSessionMode(''), false)
   assert.equal(isSessionMode(undefined), false)
   assert.equal(isSessionMode(true), false)
+  // `auto` is the ABSENCE of an override, so the store never holds it; the four others are
+  // decisions somebody made and must survive a restart. Read and write share this predicate, which
+  // is what stops a mode the UI can set from being silently dropped on the way back in.
+  assert.equal(isStoredSessionMode('auto'), false)
+  for (const mode of ['all', 'user', 'project', 'off']) assert.equal(isStoredSessionMode(mode), true, `${mode} must persist`)
+  assert.equal(isStoredSessionMode('nope'), false)
 })
 
-test('`project` narrows the user scope and leaves the custom-root decision to `resolveRoots`', () => {
+test('the five session modes map onto the scope flags, through the SAME function as the global layer', () => {
   // `generation.roots` REPLACES the built-ins, and `resolveRoots` returns that list BEFORE it
   // consults these flags — so narrowing is simply ignored there. Guarding on `mode` instead
   // would fail to narrow a `custom` configuration that names no roots, which is exactly when
   // the built-ins are still in use.
   const config = { mode: 'native', userScope: true, projectScope: true, consumption: { maxTokens: 1 } }
-  assert.deepEqual(scopedConfig(config, 'project'), { ...config, userScope: false })
-  assert.deepEqual(scopedConfig({ ...config, mode: 'custom' }, 'project'), { ...config, mode: 'custom', userScope: false })
-  // Every other mode is the configuration itself — the SAME object, so nothing downstream can
-  // accidentally depend on a narrowed copy.
+  // The three scope states pin BOTH flags, so they mean the same thing here and on the global row:
+  // `all` widens a globally-project-only setup, which is why it exists at all.
+  assert.deepEqual(scopedConfig(config, 'all'), { ...config, userScope: true, projectScope: true })
+  assert.deepEqual(scopedConfig(config, 'user'), { ...config, userScope: true, projectScope: false })
+  assert.deepEqual(scopedConfig(config, 'project'), { ...config, userScope: false, projectScope: true })
+  // `user` and `project` must narrow the OPPOSITE scope. A copy-paste here would silently give a
+  // "user only" session the project's notes, which no test of `project` alone would catch.
+  assert.equal(scopedConfig(config, 'user').projectScope, false)
+  assert.equal(scopedConfig(config, 'project').userScope, false)
+  // A custom configuration is narrowed too — the flags are still what the built-ins read.
+  assert.deepEqual(scopedConfig({ ...config, mode: 'custom' }, 'project'), { ...config, mode: 'custom', userScope: false, projectScope: true })
+  // `auto` follows the configuration and `off` is refused long before a reader gets here, so both
+  // return the SAME object: nothing downstream may depend on a narrowed copy that was never applied.
   assert.equal(scopedConfig(config, 'auto'), config)
   assert.equal(scopedConfig(config, 'off'), config)
+})
+
+test('every session mode has a consequence sentence, and a global state has one too', () => {
+  // A mode the UI can set but nobody wrote a sentence for would render as the literal string
+  // "undefined" in `/memory-switch` and `/memory`. The tables are the vocabulary; this pins them
+  // to the mode list rather than trusting that they were kept in step by hand.
+  for (const mode of SESSION_MODES) {
+    assert.equal(typeof MODE_CONSEQUENCE[mode], 'string', `MODE_CONSEQUENCE is missing "${mode}"`)
+    assert.ok(MODE_CONSEQUENCE[mode].length > 20, `MODE_CONSEQUENCE["${mode}"] must explain the mode`)
+  }
+  // And the other direction: a sentence for a state that does not exist is a stale entry.
+  assert.deepEqual(Object.keys(MODE_CONSEQUENCE).sort(), [...SESSION_MODES].sort())
+  // The global layer's own table needs the same completeness, including `none` (reportable but not
+  // writable), which `/memory-scope` prints for a hand-edited configuration.
+  for (const state of ['all', 'project', 'user', 'none']) {
+    assert.equal(typeof GLOBAL_CONSEQUENCE[state], 'string', `GLOBAL_CONSEQUENCE is missing "${state}"`)
+  }
 })
 
 /* ---------------- the config writer ---------------- */

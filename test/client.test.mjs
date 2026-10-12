@@ -682,25 +682,37 @@ async function renderComposer(payload, localeId = 'en', options = {}) {
   return { text, json, renderer, locale, options: slotOptions, calls }
 }
 
-const TOGGLE = { session: 'session-aaaa', cwd: 'C:\\proj', mode: 'auto', modes: ['auto', 'project', 'off'], global: 'all' }
+const TOGGLE = { session: 'session-aaaa', cwd: 'C:\\proj', mode: 'auto', modes: ['auto', 'all', 'user', 'project', 'off'], global: 'all' }
 
-await test('the composer control shows this session’s mode and cycles all three', async () => {
+await test('the composer control cycles all FIVE states, each saying what it does', async () => {
   // The button's own text and `data-state` are the contract: the label says the CURRENT state, and
   // the dot's tone makes it readable at a glance in a busy composer row.
   const auto = await renderComposer(TOGGLE)
   assert.match(auto.text, /<button><span>Auto\n/)
   assert.match(auto.json, /"data-state":"auto"/)
   // The tooltip answers all three questions a user has, not just the next click: what is in effect,
-  // what it means, and what clicking does. The old title carried only the first and the last.
-  assert.match(auto.json, /"title":"Now: Auto · follows the global scopes: user \+ project · Click for Project only"/)
-  // The accessible name is the whole sentence, so a screen reader is not left with one word.
+  // what it means, and what clicking does.
+  assert.match(auto.json, /"title":"Now: Auto · follows the global scopes: user \+ project · Click for User \+ project"/)
+  // The accessible name is the whole sentence, so a screen reader is not left with one label.
   assert.match(auto.json, /"aria-label":"Memory in this session: Auto — follows the global scopes: user \+ project"/)
+
+  // Each of the three scope states says what it DOES. Without that the five would be distinguishable
+  // only by name, which is the defect the tooltip was rewritten to fix.
+  const all = await renderComposer({ ...TOGGLE, mode: 'all' })
+  assert.match(all.text, /<button><span>User \+ project\n/)
+  assert.match(all.json, /"data-state":"all"/)
+  assert.match(all.json, /both scopes for this session, whatever the global layer says/)
+  assert.match(all.json, /Click for User only/)
+
+  const user = await renderComposer({ ...TOGGLE, mode: 'user' })
+  assert.match(user.text, /<button><span>User only\n/)
+  assert.match(user.json, /"data-state":"user"/)
+  assert.match(user.json, /cross-project \(user\) memory only — this project’s memory is neither loaded nor recorded/)
+  assert.match(user.json, /Click for Project only/)
 
   const project = await renderComposer({ ...TOGGLE, mode: 'project' })
   assert.match(project.text, /<button><span>Project only\n/)
   assert.match(project.json, /"data-state":"project"/)
-  // Each mode says what it DOES, which is what makes the three states distinguishable in consequence
-  // rather than only in name.
   assert.match(project.json, /project memory only — cross-project knowledge is neither loaded nor recorded/)
   assert.match(project.json, /Click for Off/)
 
@@ -708,13 +720,64 @@ await test('the composer control shows this session’s mode and cycles all thre
   assert.match(off.text, /<button><span>Off\n/)
   assert.match(off.json, /"data-state":"off"/)
   assert.match(off.json, /nothing is injected into this session, and nothing from it is recorded/)
-  // From `off` the cycle wraps to `auto`, so one button covers all three with no menu.
+  // From `off` the cycle wraps to `auto`, so one button covers all five with no menu.
   assert.match(off.json, /Click for Auto/)
 
   // The global layer is stated as what `auto` actually follows, so "Auto" is not a word with nothing
   // behind it: with the global user scope off, Auto names the project scope alone.
   const scoped = await renderComposer({ ...TOGGLE, mode: 'auto', global: 'project' })
   assert.match(scoped.json, /follows the global scopes: project/)
+})
+
+await test('every composer state has its own dot colour', async () => {
+  // The dot is the at-a-glance signal, and a state with no rule falls back to the neutral default,
+  // which reads as "nothing is set". Adding a state and forgetting its colour would therefore make
+  // the button quietly LESS informative than before it existed.
+  //
+  // Read the CSS out of a REAL render rather than the source text: the stylesheet is a JS string
+  // with escaped quotes, so a source-level regex can miss the very rules a browser would apply.
+  const { SESSION_MODES } = await import('../lib/memory-switch.js')
+  const { renderer } = await renderComposer(TOGGLE, 'en', { keep: true })
+  const style = renderer.root.findAll((node) => node.type === 'style')[0]
+  const css = String(style.children.join(''))
+  renderer.unmount()
+
+  const selectors = new Set([...css.matchAll(/dshmem-quick\[data-state='(\w+)'\] +\.dshmem-quick-dot/g)].map((m) => m[1]))
+  assert.ok(selectors.size >= SESSION_MODES.length, `expected a rule per state, found ${[...selectors].join(', ')}`)
+  for (const mode of SESSION_MODES) {
+    assert.ok(selectors.has(mode), `mode "${mode}" has no dot colour, so it renders as "nothing is set"`)
+  }
+  // The tone is meant to GROUP the states, not merely exist: the three scope states share the
+  // "pinned for this session" colour, so a glance says "overridden" without reading the label.
+  // They are written as ONE rule with a comma-separated selector list, so match that shape and
+  // require the single declaration it ends with.
+  const pinned = css.match(/(\.dshmem-quick\[data-state='(?:all|user|project)'\] +\.dshmem-quick-dot,?)+\{([^}]*)\}/)
+  assert.ok(pinned, 'the three pinned scope states must share one dot colour')
+  assert.deepEqual(
+    [...new Set([...pinned[2].matchAll(/background:var\((--[\w-]+)/g)].map((m) => m[1]))],
+    ['--dsw-alias-state-business-primary'],
+    'the pinned group must resolve to exactly one colour',
+  )
+  // And it must be a DIFFERENT colour from `auto` and from `off`, or the dot stops distinguishing
+  // "following the configuration" from "pinned" — the one thing it is there for.
+  const colorOf = (state) => {
+    const rule = css.match(new RegExp(`dshmem-quick\\[data-state='${state}'\\] +\\.dshmem-quick-dot\\{([^}]*)\\}`))
+    return rule === null ? undefined : rule[1].match(/var\((--[\w-]+)/)[1]
+  }
+  assert.notEqual(colorOf('auto'), colorOf('project'), 'auto and a pinned state must not share a tone')
+  assert.notEqual(colorOf('off'), colorOf('auto'), 'off and auto must not share a tone')
+})
+
+await test('the composer’s offline cycle matches the modes the Host publishes', async () => {
+  // The button has a built-in cycle for the moment before the first read lands. If it disagreed with
+  // `SESSION_MODES`, a user could click a state this build does not implement — and the request would
+  // be refused only after the poll arrived. Pin the two lists to each other.
+  const { SESSION_MODES } = await import('../lib/memory-switch.js')
+  const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
+  const match = source.match(/var fallback = \[([^\]]*)\]/)
+  assert.ok(match, 'the composer control must keep a fallback cycle')
+  const fallback = [...match[1].matchAll(/'([a-z]+)'/g)].map((m) => m[1])
+  assert.deepEqual(fallback, [...SESSION_MODES], 'the offline cycle must be exactly the Host’s mode list')
 })
 
 await test('the composer control says which of the three reasons it cannot answer', async () => {
@@ -761,7 +824,7 @@ await test('the composer control posts the CYCLE, naming its own session', async
   // ...and the click POSTed the NEXT state in the cycle, to that same named session.
   assert.equal(posted.length, 1, 'exactly one write')
   assert.equal(posted[0].url, '/api/memory/switch')
-  assert.deepEqual(JSON.parse(posted[0].body), { session: 'session-aaaa', mode: 'project' })
+  assert.deepEqual(JSON.parse(posted[0].body), { session: 'session-aaaa', mode: 'all' })
 })
 
 await test('the composer control keeps a failure on the button instead of throwing', async () => {
