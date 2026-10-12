@@ -954,6 +954,7 @@ await test('every route declares methods and a buffered body', async () => {
     '/api/memory/flush',
     '/api/memory/preview',
     '/api/memory/refresh',
+    '/api/memory/scope',
     '/api/memory/status',
     '/api/memory/switch',
     '/api/memory/trust',
@@ -3834,6 +3835,94 @@ await test('the status route publishes the legal floor for the cap', async () =>
   const { json } = await callRoute(routes, '/api/memory/status')
   assert.equal(json.minTokens, 1)
   assert.equal(json.maxTokens, 2000)
+})
+
+await test('the scope route writes the global layer, through the SAME writer as /memory-scope', async () => {
+  // The panel and the command must not be able to disagree about what `project` means, so both go
+  // through `scopeFields` in one module. This drives the route and asserts the exact flags that land.
+  const fs = makeFs({})
+  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, loadConfig({ mode: 'custom', generation: { turnComplete: { enabled: false } } }))
+  let current = { enabled: true, userScope: true, projectScope: true, mode: 'native' }
+  const edits = []
+  services.set('configEditor', {
+    entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
+    edit: async (entry, change) => {
+      current = change(current)
+      edits.push({ entry, next: current })
+    },
+  })
+
+  for (const [scopes, want] of [
+    ['all', { userScope: true, projectScope: true }],
+    ['user', { userScope: true, projectScope: false }],
+    ['project', { userScope: false, projectScope: true }],
+  ]) {
+    const before = edits.length
+    const response = await callRoute(routes, '/api/memory/scope', { method: 'POST', body: { scopes } })
+    assert.equal(response.status, 200, `${scopes} must be accepted`)
+    assert.equal(response.json.scopes, scopes)
+    assert.equal(edits.length, before + 1)
+    // Deep merge: whatever else was in the config survives a two-flag write.
+    assert.deepEqual(edits[edits.length - 1].next, { enabled: true, mode: 'native', ...want })
+    assert.equal(edits[edits.length - 1].entry.options.name, '@dsh-external/dsh-memory', 'found by specifier')
+  }
+})
+
+await test('the scope route refuses a state it cannot write, including the one it can only report', async () => {
+  const fs = makeFs({})
+  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, loadConfig({ mode: 'custom', generation: { turnComplete: { enabled: false } } }))
+  services.set('configEditor', {
+    entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
+    edit: async () => {
+      throw new Error('must not be called')
+    },
+  })
+
+  // `none` is a state the panel REPORTS but must never OFFER: it is a fourth spelling of "no memory
+  // at all" beside `enabled: false`, and accepting it here would give it a silent second door.
+  for (const bad of ['none', 'everything', '', '  ', true, null, undefined, 7, {}, []]) {
+    const response = await callRoute(routes, '/api/memory/scope', { method: 'POST', body: { scopes: bad } })
+    assert.equal(response.status, 400, `scopes=${JSON.stringify(bad)} must be refused`)
+  }
+  assert.equal((await callRoute(routes, '/api/memory/scope', { method: 'POST', body: {} })).status, 400)
+  assert.equal((await callRoute(routes, '/api/memory/scope', { method: 'POST', body: [] })).status, 400)
+
+  // A well-formed, legal request in a composition that cannot write config is 501, not 400: the
+  // caller did nothing wrong, the DEPLOYMENT cannot honour it.
+  const bare = makeCtx(makeFs({}), makeLlm('{}'))
+  apply(bare.ctx, loadConfig({ mode: 'custom', generation: { turnComplete: { enabled: false } } }))
+  const noWriter = await callRoute(bare.routes, '/api/memory/scope', { method: 'POST', body: { scopes: 'all' } })
+  assert.equal(noWriter.status, 501)
+  assert.match(noWriter.json.error, /no configEditor/)
+})
+
+await test('the status route publishes the scope choices and whether config is writable here', async () => {
+  // The panel cannot import the Host's vocabulary, so the choice list and the writability of this
+  // composition both ride on the payload. Without the second, the panel would render a Save whose
+  // only possible answer is 501.
+  const { routes, services } = switchFixture()
+  const bare = await callRoute(routes, '/api/memory/status')
+  assert.deepEqual(bare.json.globalScopeChoices, ['all', 'project', 'user'])
+  assert.ok(!bare.json.globalScopeChoices.includes('none'), 'a state that cannot be written must not be offered')
+  assert.equal(bare.json.configWritable, false, 'this fixture has no configEditor')
+
+  const writer = switchFixture()
+  writer.services.set('configEditor', { entries: () => [], edit: async () => {} })
+  const withWriter = await callRoute(writer.routes, '/api/memory/status')
+  assert.equal(withWriter.json.configWritable, true)
+  assert.equal(services.get('configEditor'), undefined, 'the first fixture must not have leaked a writer')
+})
+
+await test('/memory-scope reports `none` instead of reporting it as `project`', async () => {
+  // A real defect the shared vocabulary fixes: the inline ternary chain read
+  // `userScope: false, projectScope: false` as "project" — the opposite of the truth.
+  const { commands } = switchFixture({ config: { userScope: false, projectScope: false } })
+  const status = await runCommand(commands, 'memory-scope')
+  assert.equal(status.kind, 'success')
+  assert.match(status.text, /global memory scopes: none/)
+  assert.doesNotMatch(status.text, /undefined/, 'a state with no entry in the table must not print undefined')
 })
 
 console.log(`\n${passed} integration tests passed`)

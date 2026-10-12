@@ -214,6 +214,11 @@ const STATUS = {
   pendingGenerations: 2,
   // The GLOBAL layer the panel reports, and which a session set to `Auto` follows.
   globalScopes: 'all',
+  // The states a control may offer, and whether this composition can write config at all. Both come
+  // from the Host: the bundle cannot import its vocabulary, and it must not render a Save whose only
+  // possible answer is 501. The real status route always sends both.
+  globalScopeChoices: ['all', 'project', 'user'],
+  configWritable: true,
   // The session's own mode, which the panel reports read-only (the control is in the composer).
   memoryMode: 'auto',
   lastGeneration: { status: 'saved', turnIndex: 3, writtenFiles: [], failedFiles: [] },
@@ -304,10 +309,14 @@ await test('the panel renders the full status, scopes, budget, and activity', as
   // Status rows.
   assert.match(text, /enabled/)
   assert.match(text, /minPromptChars=40/)
-  // The global layer is named on the page, because it is what a session set to `Auto` follows: a
-  // panel that showed only the per-session mode would leave "Auto" undefined.
-  assert.match(text, /Global scopes\n<span>user \+ project/)
-  // And THIS session's own mode, read-only here: the control is in the composer, but a settings page
+  // The global layer is EDITABLE in the panel: it is what a session set to `Auto` follows, so the row
+  // that explains "Auto" is also where it is changed. It renders as a select of the Host's choices
+  // plus a Save, with the current value selected.
+  assert.match(text, /Global scopes\n<select>/)
+  // (collectText renders tag NAMES only, and no closing tags — so the option run is asserted without
+  // one, and the select's own attributes are checked in the JSON projection below.)
+  assert.match(text, /<option>user \+ project\n<option>project only\n<option>user only\n<button>Save\n/)
+  assert.match(text, /<button>Save\n/, 'the scope row offers a Save')  // And THIS session's own mode, read-only here: the control is in the composer, but a settings page
   // that omitted it would leave a scoped session looking broken.
   assert.match(text, /Memory in this session\n<span>Auto/)
   assert.match(text, /In-flight generations\n<span>2\n/, 'in-flight generation count must render')
@@ -328,7 +337,12 @@ await test('the panel renders the full status, scopes, budget, and activity', as
   // allowed; the hint now says how to really inject nothing.
   assert.match(text, /Injection cap \(tokens\)\n<input><button>Save/)
   assert.match(text, /How much memory may enter the context/)
-  assert.match(json, /"type":"number","className":"dshmem-input dshmem-number","min":1,"value":"2000"/)
+  // Attribute order follows the object literal, so match the attributes themselves rather than a
+  // whole run: the row is now rendered by the shared `Editor` and its props were regrouped.
+  assert.match(json, /"type":"number"/)
+  assert.match(json, /"className":"dshmem-input dshmem-number"/)
+  assert.match(json, /"min":1/)
+  assert.match(json, /"value":"2000"/)
   assert.match(text, /If it does not fit \(truncate \| fail_query\)\n<span>truncate\n/)
   assert.match(text, /If a file fails to load \(best_effort \| fail_query\)\n<span>best_effort\n/)
   // The generation side belongs in the same section: one budget without the other is how
@@ -350,6 +364,62 @@ await test('the panel renders the full status, scopes, budget, and activity', as
   assert.match(text, /<button>Save\n/)
   assert.match(text, /<button>Reload into session\n/)
   assert.match(text, /<button>Flush generations\n/)
+})
+
+await test('the panel degrades the scope control to read-only when this composition cannot write config', async () => {
+  // A control whose Save could only ever answer 501 is worse than a read-only row: it invites an
+  // action that cannot work. The Host publishes whether a writer exists, and the panel obeys.
+  const { text, json } = await renderWithStatus({ ...STATUS, configWritable: false })
+  assert.doesNotMatch(text, /Global scopes\n<select>/, 'no select when it could not be saved')
+  assert.match(text, /Global scopes\n<span>user \+ project/, 'the value is still REPORTED, just not editable')
+
+  // And when the configuration is in the one state the control may not offer, the panel says so —
+  // and MUST NOT display its first option instead. A `<select>` whose value matches no option shows
+  // the first one, which would report "user + project" while the truth is "no scope at all": the
+  // panel lying about the very thing it exists to explain. The unofferable state becomes its own
+  // option, so the control keeps showing the truth and the user can still leave it.
+  const none = await renderWithStatus({ ...STATUS, globalScopes: 'none' })
+  assert.match(none.text, /No scope is enabled\./, 'a reported-only state is explained')
+  assert.match(none.text, /<select><option>both scopes are off\n<option>user \+ project\n/, 'the current state leads the list, so the value it displays is true')
+  assert.match(none.json, /"value":"none"/, 'and it is the selected value, not a blank that falls back to option one')
+  assert.match(none.text, /<button>Save\n/, 'the state is still writable, so it can be left')
+})
+
+await test('the panel saves the global scopes through the scope route', async () => {
+  // The write path, driven for real: pick a different state, click Save, and assert the exact body.
+  const calls = []
+  const posted = []
+  const registration = loadBundle(async (url, init) => {
+    calls.push(String(url))
+    if (init !== undefined) posted.push({ url: String(url), body: init.body })
+    return { ok: true, json: async () => (String(url).includes('/status') ? STATUS : { ok: true, scopes: 'project' }) }
+  })
+  const clientPlugin = registration.factory((specifier) => React)
+  const { registrations, locale } = registerComponent(clientPlugin)
+  const { options, component } = registrations[0]
+  let renderer
+  await act(async () => {
+    renderer = TestRenderer.create(React.createElement(component, slotProps(locale, options)))
+  })
+  await act(async () => {
+    await Promise.resolve()
+  })
+  // Change the controlled select's value, then Save. Selected by class, since the editor's own
+  // select is also on the page.
+  const select = renderer.root.findAll((node) => node.type === 'select' && String(node.props.className).includes('dshmem-global'))[0]
+  await act(async () => {
+    select.props.onChange({ target: { value: 'project' } })
+  })
+  const saveButton = renderer.root.findAll((node) => node.type === 'button' && String(node.children.join('')) === 'Save')[0]
+  await act(async () => {
+    saveButton.props.onClick()
+    await Promise.resolve()
+  })
+  renderer.unmount()
+
+  assert.equal(posted.length, 1, 'exactly one write')
+  assert.equal(posted[0].url, '/api/memory/scope')
+  assert.deepEqual(JSON.parse(posted[0].body), { scopes: 'project' })
 })
 
 await test('the panel renders the custom-gate shape', async () => {
@@ -620,23 +690,41 @@ await test('the composer control shows this session’s mode and cycles all thre
   const auto = await renderComposer(TOGGLE)
   assert.match(auto.text, /<button><span>Auto\n/)
   assert.match(auto.json, /"data-state":"auto"/)
-  assert.match(auto.json, /"title":"Click: Project only · Global: user \+ project"/)
+  // The tooltip answers all three questions a user has, not just the next click: what is in effect,
+  // what it means, and what clicking does. The old title carried only the first and the last.
+  assert.match(auto.json, /"title":"Now: Auto · follows the global scopes: user \+ project · Click for Project only"/)
+  // The accessible name is the whole sentence, so a screen reader is not left with one word.
+  assert.match(auto.json, /"aria-label":"Memory in this session: Auto — follows the global scopes: user \+ project"/)
 
   const project = await renderComposer({ ...TOGGLE, mode: 'project' })
   assert.match(project.text, /<button><span>Project only\n/)
   assert.match(project.json, /"data-state":"project"/)
-  assert.match(project.json, /"title":"Click: Off · Global: user \+ project"/, 'the title names the NEXT state')
+  // Each mode says what it DOES, which is what makes the three states distinguishable in consequence
+  // rather than only in name.
+  assert.match(project.json, /project memory only — cross-project knowledge is neither loaded nor recorded/)
+  assert.match(project.json, /Click for Off/)
 
   const off = await renderComposer({ ...TOGGLE, mode: 'off' })
   assert.match(off.text, /<button><span>Off\n/)
   assert.match(off.json, /"data-state":"off"/)
+  assert.match(off.json, /nothing is injected into this session, and nothing from it is recorded/)
   // From `off` the cycle wraps to `auto`, so one button covers all three with no menu.
-  assert.match(off.json, /"title":"Click: Auto/)
+  assert.match(off.json, /Click for Auto/)
 
   // The global layer is stated as what `auto` actually follows, so "Auto" is not a word with nothing
   // behind it: with the global user scope off, Auto means project only.
   const scoped = await renderComposer({ ...TOGGLE, mode: 'auto', global: 'project' })
-  assert.match(scoped.json, /Global: project only/)
+  assert.match(scoped.json, /follows the global scopes: project only/)
+})
+
+await test('the composer control says which of the three reasons it cannot answer', async () => {
+  // Three distinct situations, kept apart: no session id yet (nothing was ever requested), a poll
+  // that has not landed, and a real failure. Blaming all three on "could not change it" — as an
+  // earlier version did — made a not-yet-loaded button look like a broken one.
+  const noSession = await renderComposer(TOGGLE, 'en', { sessionId: '' })
+  assert.match(noSession.json, /"title":"This session has no id yet, so memory cannot be switched from here\."/)
+  assert.equal(noSession.json.includes('"disabled":true'), true, 'with no id the control is disabled, not a lie')
+  assert.doesNotMatch(noSession.json, /Click for/, 'it must not promise a click that cannot happen')
 })
 
 await test('the composer control posts the CYCLE, naming its own session', async () => {
@@ -902,9 +990,11 @@ await test('the editor select is styled as a select, and shows what it will load
   assert.match(rule('.dshmem-select option'), /color:var\(/, 'the OS-drawn popup needs themed options')
 
   // The option list must contain the value the select displays — otherwise the
-  // browser shows the first option while the state says something else.
+  // browser shows the first option while the state says something else. Select BY CLASS: the panel
+  // now renders two `dshmem-select`s (the global scope control and this one), so a positional lookup
+  // silently checked the wrong element — the same trap the panel fixture hit before.
   const { renderer } = await renderWithStatus(STATUS, 'en', { keep: true })
-  const element = renderer.root.findAll((node) => node.type === 'select')[0]
+  const element = renderer.root.findAll((node) => node.type === 'select' && String(node.props.className).includes('dshmem-scope-select'))[0]
   assert.ok(element, 'the editor must render a select')
   assert.ok(element.props.className.includes('dshmem-select'), 'the select must not borrow the button class')
   const values = element.children.map((child) => child.props.value)
@@ -912,7 +1002,7 @@ await test('the editor select is styled as a select, and shows what it will load
   renderer.unmount()
 
   const userOnly = await renderWithStatus({ ...STATUS, roots: [STATUS.roots[0]] }, 'en', { keep: true })
-  const narrow = userOnly.renderer.root.findAll((node) => node.type === 'select')[0]
+  const narrow = userOnly.renderer.root.findAll((node) => node.type === 'select' && String(node.props.className).includes('dshmem-scope-select'))[0]
   assert.equal(narrow.props.value, 'user', 'with project disabled the select must fall back to an enabled scope')
   userOnly.renderer.unmount()
 })
@@ -1117,7 +1207,7 @@ await test('no user-visible string is hardcoded in the component body', () => {
 await test('the panel talks only to the /api/memory routes', () => {
   const paths = [...source.matchAll(/['"](\/api\/memory\/[a-z]+)/g)].map((match) => match[1])
   assert.ok(paths.length > 0)
-  const known = ['/api/memory/status', '/api/memory/file', '/api/memory/preview', '/api/memory/refresh', '/api/memory/flush', '/api/memory/trust', '/api/memory/switch', '/api/memory/budget']
+  const known = ['/api/memory/status', '/api/memory/file', '/api/memory/preview', '/api/memory/refresh', '/api/memory/flush', '/api/memory/trust', '/api/memory/switch', '/api/memory/budget', '/api/memory/scope']
   for (const path of paths) {
     assert.ok(known.includes(path), `unexpected route ${path}`)
   }

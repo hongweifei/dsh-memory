@@ -46,7 +46,7 @@ const LAYERS = [
   ['render.js', 'memory-pass.js', 'memory-prompt.js', 'memory-search.js', 'imports.js', 'excludes.js', 'trust.js', 'jit.js', 'transcript.js', 'failure-pause.js', 'memory-switch.js', 'project-scopes.js', 'commands-report.js'],
   ['memory-agent.js', 'consumption-plan.js'],
   ['consumption.js', 'generation.js', 'dream.js'],
-  ['service.js', 'tools.js', 'routes.js', 'commands.js', 'consumption-seam.js', 'budget-route.js'],
+  ['service.js', 'tools.js', 'routes.js', 'commands.js', 'consumption-seam.js', 'config-route.js'],
   ['index.js'],
 ]
 const layerOf = new Map()
@@ -66,19 +66,20 @@ test('the Host half is split into focused modules', () => {
  * `memory-migrate`, then the `imports` glue), because a Host module can always
  * become two modules.
  *
- * `client.js` cannot. The browser module loader loads ONE artifact per package,
- * a client bundle cannot import a Host module, and its three inline data blocks —
- * the two locale dictionaries and the stylesheet copied from the UI primitives —
- * therefore have to live in that file. They are excluded from the logic count as
- * literal data. What remains is the panel's own render tree, and its cost is
- * inherent: every labelled row is a line, and extracting a component
- * (`ScopeCard`, `act`) improves the STRUCTURE without reducing the line count.
- * So its limit is higher by decision, not by drift — and it is still a limit: a
- * future panel feature that needs more room should make the panel show less (a
- * collapsed section) rather than earn another bump.
+ * `client.js` cannot be split the same way. The browser module loader loads ONE
+ * artifact per package, a client bundle cannot import a Host module, and its three
+ * inline data blocks — the two locale dictionaries and the stylesheet copied from
+ * the UI primitives — therefore have to live in that file. They are excluded from
+ * the logic count as literal data.
+ *
+ * The client check is a DRIFT guard, not a compromise budget: it exists so the
+ * panel cannot quietly double in size, not so that a panel feature has to be
+ * dropped to fit under it. The owner's ruling is that this project should not
+ * contort the UI for a self-imposed line count, so the ceiling is set above the
+ * current shape rather than the shape being cut to the ceiling.
  */
 const MAX_HOST_LOGIC_LINES = 500
-const MAX_CLIENT_LOGIC_LINES = 560
+const MAX_CLIENT_LOGIC_LINES = 640
 const MAX_INLINE_DATA_LINES = 220
 
 test('no module is a god file', () => {

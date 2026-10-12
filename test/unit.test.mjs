@@ -62,6 +62,9 @@ import {
   scopedConfig,
   merge,
   CONSUMPTION_MIN_TOKENS,
+  GLOBAL_SCOPE_CHOICES,
+  scopeFields,
+  describeGlobalScopes,
   validateMemoryConfig,
 } from '../lib/index.js'
 
@@ -1385,6 +1388,45 @@ test('the cap floor is one shared constant, so no surface can offer an illegal v
   assert.throws(() => validateMemoryConfig({ consumption: { maxTokens: 0 } }), /at least 1/)
   assert.throws(() => validateMemoryConfig({ consumption: { maxTokens: 1.5 } }), /at least 1/)
   validateMemoryConfig({ consumption: { maxTokens: 1 } })
+})
+
+test('the global scope vocabulary round-trips, and only offers states it can write', () => {
+  // The writing direction and the reading direction live in one module precisely so a control cannot
+  // offer a state the route would refuse, or report a state as something else. Both halves are checked
+  // against each other here, which is the property the two-flag encoding actually has to satisfy.
+  for (const state of GLOBAL_SCOPE_CHOICES) {
+    const fields = scopeFields(state)
+    assert.ok(fields, `${state} must be writable`)
+    // What it writes is what it reads back. This is the round trip that makes the two directions one
+    // vocabulary rather than two guesses that happen to agree today.
+    assert.equal(describeGlobalScopes(fields), state, `${state} must round-trip through its own flags`)
+  }
+  // `none` is REPORTABLE but not WRITABLE: it is a fourth spelling of "no memory at all" beside
+  // `enabled: false`, so the panel must never offer it while the panel must still be able to say it.
+  assert.ok(!GLOBAL_SCOPE_CHOICES.includes('none'), 'none must not be offered')
+  assert.equal(scopeFields('none'), undefined, 'and it cannot be written')
+  assert.equal(describeGlobalScopes({ userScope: false, projectScope: false }), 'none')
+  // An unknown state is refused rather than mapped onto its nearest neighbour. `'ALL'` is included:
+  // the vocabulary is exact and case-sensitive, and the ROUTE is what lowercases user input.
+  for (const bad of ['', 'everything', 'ALL', 'none', true, null, undefined]) {
+    assert.equal(scopeFields(bad), undefined, `${JSON.stringify(bad)} must not be writable`)
+  }
+})
+
+test('describeGlobalScopes reports all four combinations, never folding one into another', () => {
+  // A real defect this pins: reporting only "both" vs "project" turned `userScope: true,
+  // projectScope: false` into "all" — the exact opposite of the truth.
+  for (const [flags, want] of [
+    [{ userScope: true, projectScope: true }, 'all'],
+    [{ userScope: false, projectScope: true }, 'project'],
+    [{ userScope: true, projectScope: false }, 'user'],
+    [{ userScope: false, projectScope: false }, 'none'],
+  ]) {
+    assert.equal(describeGlobalScopes(flags), want, `${JSON.stringify(flags)} must be "${want}"`)
+  }
+  // An absent flag means the schema default (`true`), because `describeGlobalScopes` is fed the
+  // RESOLVED configuration — a missing key is not "off".
+  assert.equal(describeGlobalScopes({}), 'all')
 })
 
 console.log(`\n${passed} tests passed`)

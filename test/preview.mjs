@@ -42,8 +42,11 @@ const STATUS = {
   largeFileLimit: 40000,
   pendingGenerations: 1,
   // The global layer the panel reports, which is what a session set to `Auto` follows. The session
-  // switch itself lives in the composer now, so no `sessions` list is published.
+  // switch itself lives in the composer now, so no `sessions` list is published. The scope control is
+  // EDITABLE, so the panel also needs the states it may offer and whether this composition can write.
   globalScopes: 'all',
+  globalScopeChoices: ['all', 'project', 'user'],
+  configWritable: true,
   lastGeneration: { status: 'saved', turnIndex: 4, writtenFiles: [], failedFiles: [] },
   lastConsumption: {
     status: 'success',
