@@ -87,7 +87,7 @@ test('the Host half is split into focused modules', () => {
  * current shape rather than the shape being cut to the ceiling.
  */
 const MAX_HOST_LOGIC_LINES = 500
-const MAX_CLIENT_LOGIC_LINES = 640
+const MAX_CLIENT_LOGIC_LINES = 680
 const MAX_INLINE_DATA_LINES = 220
 
 test('no module is a god file', () => {

@@ -222,6 +222,10 @@ const STATUS = {
   // possible answer is 501. The real status route always sends both.
   globalScopeChoices: ['all', 'user', 'project'],
   configWritable: true,
+  // The plugin modes a control may offer, and whether the cap is writable here. Both are Host facts:
+  // `consumptionWritable` is false in `native`, where the SDK refuses every consumption override.
+  modeChoices: ['native', 'custom'],
+  consumptionWritable: true,
   // The session's own mode, which the panel reports read-only (the control is in the composer).
   memoryMode: 'auto',
   lastGeneration: { status: 'saved', turnIndex: 3, writtenFiles: [], failedFiles: [] },
@@ -388,6 +392,93 @@ await test('the panel degrades the scope control to read-only when this composit
   assert.match(none.text, /<button>Save\n/, 'the state is still writable, so it can be left')
 })
 
+await test('the panel offers the MODE, which is the way back in from a locked cap', async () => {
+  // Without this row, a user whose plugin runs `native` cannot change the injection cap from the panel
+  // at all — they would have to hand-edit YAML and restart. So the mode is not a decoration: it is the
+  // escape hatch. The choice list comes from the Host, never invented here.
+  const { text, json } = await renderWithStatus(STATUS)
+  assert.match(text, /Mode\n<select>/)
+  assert.match(text, /<option>native \(runtime decides\)\n<option>custom \(you decide\)\n/)
+  // The selected value is the CURRENT mode, so the control cannot display a mode the plugin is not in.
+  assert.match(json, /"className":"dshmem-select dshmem-mode","value":"native"/, 'fixture mode is native')
+  assert.match(text, /Which contract this plugin runs under/)
+
+  // The hint points at this row from the locked cap, so the two must name the same thing.
+  const locked = await renderWithStatus({ ...STATUS, consumptionWritable: false })
+  assert.match(locked.text, /Read-only in mode "native"/)
+  assert.match(locked.text, /custom/, 'the locked note tells the user which mode unlocks it')
+
+  // With no writer at all, the mode degrades to the read-only row like every other control.
+  const bare = await renderWithStatus({ ...STATUS, configWritable: false })
+  assert.doesNotMatch(bare.text, /Mode\n<select>/)
+  assert.match(bare.text, /Mode\n<span>native/, 'the value is still reported, just not editable')
+})
+
+await test('the panel POSTs the mode it was asked to switch to', async () => {
+  const posted = []
+  const registration = loadBundle(async (url, init) => {
+    if (init !== undefined) posted.push({ url: String(url), body: init.body })
+    return { ok: true, json: async () => (String(url).includes('/status') ? STATUS : { ok: true, mode: 'custom', dropped: [] }) }
+  })
+  const clientPlugin = registration.factory((specifier) => React)
+  const { registrations, locale } = registerComponent(clientPlugin)
+  const { options, component } = registrations[0]
+  let renderer
+  await act(async () => {
+    renderer = React.createElement(component, slotProps(locale, options))
+    renderer = TestRenderer.create(renderer)
+  })
+  await act(async () => {
+    await Promise.resolve()
+  })
+  const select = renderer.root.findAll((node) => node.type === 'select' && String(node.props.className).includes('dshmem-mode'))[0]
+  await act(async () => {
+    select.props.onChange({ target: { value: 'custom' } })
+  })
+  // Click the Save in THIS row: the panel renders several, so "the first button" is the wrong one.
+  const saveButton = select.parent.findAll((node) => node.type === 'button')[0]
+  await act(async () => {
+    saveButton.props.onClick()
+    await Promise.resolve()
+  })
+  renderer.unmount()
+
+  assert.equal(posted.length, 1, 'exactly one write')
+  assert.equal(posted[0].url, '/api/memory/mode')
+  assert.deepEqual(JSON.parse(posted[0].body), { mode: 'custom' })
+})
+
+await test('the panel reports the settings a switch to native removed', async () => {
+  // A `custom -> native` switch has to DROP what native refuses (that is what handing the policy back
+  // means). Dropping a prompt in silence would be the panel editing somebody's configuration behind
+  // their back, so the reply's `dropped` list has to reach the message.
+  const registration = loadBundle(async (url, init) => {
+    if (init !== undefined) return { ok: true, json: async () => ({ ok: true, mode: 'native', dropped: ['generation.prompt', 'consumption.maxTokens'] }) }
+    return { ok: true, json: async () => (String(url).includes('/status') ? STATUS : { ok: true }) }
+  })
+  const clientPlugin = registration.factory((specifier) => React)
+  const { registrations, locale } = registerComponent(clientPlugin)
+  const { options, component } = registrations[0]
+  let renderer
+  await act(async () => {
+    renderer = TestRenderer.create(React.createElement(component, slotProps(locale, options)))
+  })
+  await act(async () => {
+    await Promise.resolve()
+  })
+  const select = renderer.root.findAll((node) => node.type === 'select' && String(node.props.className).includes('dshmem-mode'))[0]
+  await act(async () => {
+    select.props.onChange({ target: { value: 'custom' } })
+  })
+  await act(async () => {
+    select.parent.findAll((node) => node.type === 'button')[0].props.onClick()
+    await Promise.resolve()
+  })
+  const text = collectText(renderer.toJSON())
+  renderer.unmount()
+  assert.match(text, /Removed so native accepts it: generation\.prompt, consumption\.maxTokens/)
+})
+
 await test('the panel reports the cap without offering an edit `native` mode would refuse', async () => {
   // The defect this pins, reported from a live profile: the panel offered an editable cap in
   // `mode: native`, where the SDK accepts only the two `onResult` callbacks. Saving wrote a
@@ -435,13 +526,14 @@ await test('the panel saves the global scopes through the scope route', async ()
   await act(async () => {
     await Promise.resolve()
   })
-  // Change the controlled select's value, then Save. Selected by class, since the editor's own
-  // select is also on the page.
+  // Change the controlled select's value, then Save. Select BY CLASS, and click the Save in the SAME
+  // row: the panel now renders several Save buttons (mode, scopes, cap), so "the first one" silently
+  // clicked a different row's control — the same positional-lookingup trap this suite hit twice before.
   const select = renderer.root.findAll((node) => node.type === 'select' && String(node.props.className).includes('dshmem-global'))[0]
   await act(async () => {
     select.props.onChange({ target: { value: 'project' } })
   })
-  const saveButton = renderer.root.findAll((node) => node.type === 'button' && String(node.children.join('')) === 'Save')[0]
+  const saveButton = select.parent.findAll((node) => node.type === 'button')[0]
   await act(async () => {
     saveButton.props.onClick()
     await Promise.resolve()
@@ -1301,7 +1393,7 @@ await test('no user-visible string is hardcoded in the component body', () => {
 await test('the panel talks only to the /api/memory routes', () => {
   const paths = [...source.matchAll(/['"](\/api\/memory\/[a-z]+)/g)].map((match) => match[1])
   assert.ok(paths.length > 0)
-  const known = ['/api/memory/status', '/api/memory/file', '/api/memory/preview', '/api/memory/refresh', '/api/memory/flush', '/api/memory/trust', '/api/memory/switch', '/api/memory/budget', '/api/memory/scope']
+  const known = ['/api/memory/status', '/api/memory/file', '/api/memory/preview', '/api/memory/refresh', '/api/memory/flush', '/api/memory/trust', '/api/memory/switch', '/api/memory/budget', '/api/memory/scope', '/api/memory/mode']
   for (const path of paths) {
     assert.ok(known.includes(path), `unexpected route ${path}`)
   }

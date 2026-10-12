@@ -21,15 +21,19 @@ const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
 
 const STATUS = {
   enabled: true,
-  mode: 'native',
+  // The preview shows `custom`, because that is the mode where the injection cap is editable — a
+  // `native` panel reports the cap read-only, and the screenshot is meant to show the control working.
+  // The two fields below must stay CONSISTENT with this: a fixture that says `native` while claiming
+  // `consumptionWritable: true` renders a state the plugin cannot actually be in.
+  mode: 'custom',
   generationEnabled: true,
   consumptionEnabled: true,
   maxTokens: 2000,
   // The legal floor for the cap, which the panel puts on its input's `min`.
   minTokens: 1,
-  // `mode: native` refuses every `consumption.*` override, so the cap is reported but not editable
-  // there. This preview shows the editable case.
+  // Whether the cap and the mode may be written here at all.
   consumptionWritable: true,
+  modeChoices: ['native', 'custom'],
   overflow: 'truncate',
   failureMode: 'best_effort',
   maxOutputTokens: 0,

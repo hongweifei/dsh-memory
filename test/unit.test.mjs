@@ -66,6 +66,9 @@ import {
   merge,
   judgeConfig,
   isOverridable,
+  isPluginMode,
+  MODES,
+  pruneForNative,
   CONSUMPTION_MIN_TOKENS,
   GLOBAL_SCOPE_CHOICES,
   scopeFields,
@@ -1518,6 +1521,97 @@ test('describeGlobalScopes reports all four combinations, never folding one into
   // An absent flag means the schema default (`true`), because `describeGlobalScopes` is fed the
   // RESOLVED configuration — a missing key is not "off".
   assert.equal(describeGlobalScopes({}), 'all')
+})
+
+/* ---------------- the plugin mode ---------------- */
+
+test('isPluginMode accepts exactly the two modes, case-sensitively', () => {
+  // The vocabulary is exact; the ROUTE is what normalizes a form's input (pinned in the integration
+  // suite). Keeping this strict is what stops `NATIVE` from being accepted as a third spelling.
+  assert.equal(isPluginMode('native'), true)
+  assert.equal(isPluginMode('custom'), true)
+  assert.equal(isPluginMode('NATIVE'), false)
+  assert.equal(isPluginMode('nativ'), false)
+  assert.equal(isPluginMode(''), false)
+  assert.equal(isPluginMode(undefined), false)
+  assert.equal(isPluginMode(true), false)
+  assert.deepEqual([...MODES], ['native', 'custom'])
+})
+
+test('pruneForNative removes exactly what native refuses, and reports it', () => {
+  // Switching TO native cannot succeed while the entry still carries settings native refuses — the
+  // rules reject that write. So the switch prunes instead. This pins WHAT it prunes: getting it wrong
+  // either leaves the switch broken or silently eats a setting nothing reported.
+  const config = {
+    mode: 'custom',
+    userScope: true,
+    projectScope: true,
+    generation: { prompt: 'x', onResult: () => {}, turnComplete: { enabled: true }, maxWrites: 4 },
+    consumption: { maxTokens: 2000, onResult: () => {} },
+  }
+  const { config: pruned, dropped } = pruneForNative(config)
+  assert.deepEqual(dropped.sort(), [
+    'consumption.maxTokens',
+    'generation.maxWrites',
+    'generation.prompt',
+    'generation.turnComplete',
+  ])
+  // The one allowed override survives on BOTH sides, or switching would silently unregister a callback.
+  assert.equal(typeof pruned.generation.onResult, 'function')
+  assert.equal(typeof pruned.consumption.onResult, 'function')
+  // Top-level keys are untouched: native accepts the scopes.
+  assert.equal(pruned.userScope, true)
+  // Nothing is mutated — the caller's object is the entry's live config.
+  assert.equal(config.generation.prompt, 'x')
+  assert.equal(config.consumption.maxTokens, 2000)
+})
+
+test('a `!!js` value round-trips as its RAW node, which is what the harness stores', () => {
+  // Settled from the harness source: a `!!js` scalar constructs to `{ __jsExpr }` and "The raw node
+  // stays in the options, so write-back keeps the form" — the Loader evaluates it for ACTIVATION
+  // without replacing it in `entry.options.config`. That matters here for two reasons:
+  //
+  //   1. `ConfigEditor.edit` begins with `structuredClone(entry.options.config ?? {})`, and
+  //      `structuredClone` THROWS on a function — so if the config held evaluated callbacks, no config
+  //      write could work on any profile using `!!js`. It holds nodes, so it does.
+  //   2. The write path must not clobber the node: a pruned or merged config has to keep the expression
+  //      text, or a switch would silently unregister somebody's callback.
+  const node = { __jsExpr: '() => {}' }
+  const config = {
+    mode: 'custom',
+    userScope: true,
+    projectScope: true,
+    generation: { prompt: 'x', onResult: node },
+    consumption: { maxTokens: 2000, onResult: node },
+  }
+  // The prune keeps the two allowed callbacks — as NODES, not values.
+  const { config: pruned, dropped } = pruneForNative(config)
+  assert.deepEqual(dropped.sort(), ['consumption.maxTokens', 'generation.prompt'])
+  assert.equal(pruned.generation.onResult, node, 'kept by reference, so the form is preserved')
+  assert.equal(pruned.consumption.onResult, node)
+  // A merge keeps them too, and adds the patched key beside them.
+  const merged = merge(config, { consumption: { maxTokens: 1500 } })
+  assert.equal(merged.consumption.onResult, node)
+  assert.equal(merged.consumption.maxTokens, 1500)
+  assert.equal(merged.generation.prompt, 'x')
+  // And the harness's own clone step succeeds on this shape, which is what makes the whole write path
+  // usable on a `!!js` profile.
+  assert.doesNotThrow(() => structuredClone(config), 'a `!!js` node must be cloneable; a FUNCTION would not be')
+})
+
+test('pruneForNative deletes an emptied block, and tolerates a hand-edited one', () => {
+  // A leftover `{}` reads as a deliberate empty override. It is deleted.
+  const emptied = pruneForNative({ mode: 'custom', consumption: { maxTokens: 2000 } })
+  assert.equal('consumption' in emptied.config, false, 'the emptied block must be gone')
+  // A block that keeps its callback stays, and only the refused key is reported.
+  const kept = pruneForNative({ mode: 'custom', consumption: { maxTokens: 2000, onResult: () => {} } })
+  assert.equal(typeof kept.config.consumption.onResult, 'function')
+  assert.deepEqual(kept.dropped, ['consumption.maxTokens'])
+  // Nothing to prune reports nothing.
+  assert.deepEqual(pruneForNative({ mode: 'native', userScope: true }).dropped, [])
+  // A non-object block is left alone rather than throwing: this must not be what breaks a switch on a
+  // profile somebody hand-edited.
+  assert.deepEqual(pruneForNative({ generation: 'nonsense' }).dropped, [])
 })
 
 console.log(`\n${passed} tests passed`)

@@ -20,6 +20,27 @@
 
 ### 新增
 
+**插件模式（`native` / `custom`）可以在设置面板里改**
+
+- **`POST /api/memory/mode`**，面板「状态」区第一行是一个下拉 + 保存，选项就是两种模式。这是上一轮那
+  道闸的必要补充：既然 `native` 下注入上限不可编辑，用户就得有一条不必手改 YAML 再重启的出路，而这一项就是它。
+  面板里可编辑的因此从**两项变成三项**（模式、全局作用域、注入上限），三项共用同一个写入器与同一套规则。
+- **切换是不对称的，而且面板说了实话**：切到 `custom` 什么都不移除；切到 `native` 时，配置里 `native` 不接受的项
+  **必须先拿掉，否则写入会被拒绝**——"把策略交回给运行时"本来就意味着这件事。所以路由**先剪枝再写**
+  （`pruneForNative`），并把剪掉的键**列在回复的 `dropped` 里**，面板照实显示
+  （"为让 native 接受，已移除：generation.prompt, consumption.maxTokens"）。**静默丢掉别人的 prompt 是不可接受的。**
+  剪枝只动 `generation`/`consumption`，两个 `onResult` 一律保留（`native` 唯一放行的覆盖），空掉的块**删除**
+  而不是留一个 `{}`（`{}` 在规则里等于"没写过"，留着只是噪音）。
+- **模式词表、校验与剪枝都在 `config-rules.js`**（叶子模块），路由的校验、面板的选项、状态载荷的 `modeChoices`
+  读的是同一份，所以控件不可能给出插件不认识的模式。输入**大小写归一**，与作用域路由一致（有测试互钉）。
+- **拒绝消息改成方向中立**：原来是"…switch the plugin to `mode: custom`"，在"正要从 custom 切走"时是自相矛盾的，
+  现在是"…use `mode: custom` for those, or remove them to run in native"。
+- **`!!js` 表达式不会被写坏**（已核实，并加了测试）：harness 把 `!!js` 存成**原始节点** `{ __jsExpr }`
+  ——"The raw node stays in the options, so write-back keeps the form"——运行时求值用于激活，但不替换
+  `entry.options.config` 里那份。所以 `ConfigEditor.edit` 开头的 `structuredClone` 不会因函数抛错，本插件的
+  `merge`/剪枝也按引用拷贝节点。测试同时断言该形状**可以**被 `structuredClone`（换成真正的函数就不行，
+  那会让所有用 `!!js` 的 profile 配置写入全失效）。
+
 **全局作用域可以在设置面板里改，会话开关的提示说清了**
 
 - **全局作用域可编辑**（`POST /api/memory/scope`）：面板状态区的「全局作用域」从只读一行变成**下拉 + 保存**，

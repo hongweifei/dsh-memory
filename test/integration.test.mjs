@@ -952,6 +952,7 @@ await test('every route declares methods and a buffered body', async () => {
     '/api/memory/budget',
     '/api/memory/file',
     '/api/memory/flush',
+    '/api/memory/mode',
     '/api/memory/preview',
     '/api/memory/refresh',
     '/api/memory/scope',
@@ -4003,6 +4004,118 @@ await test('the same write SUCCEEDS in `custom` mode, where the plugin accepts i
   assert.equal(persisted.consumption.maxTokens, 1500)
   // And the persisted result is one the plugin accepts — checked the same way the Loader would.
   apply(makeCtx(makeFs({}), makeLlm('{}')).ctx, loadConfig(persisted))
+})
+
+await test('the mode route switches, and switching TO native reports what it removed', async () => {
+  // Switching modes is not symmetric: `native` refuses every generation/consumption setting, so an
+  // entry that already carries a prompt or a cap CANNOT become native while they are there. Rather
+  // than offer a switch that must fail, the route prunes them — that IS what handing the policy back
+  // to the runtime means — and REPORTS what went, so a prompt is never dropped in silence.
+  const fs = makeFs({})
+  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, loadConfig({ mode: 'custom', generation: { turnComplete: { enabled: false } } }))
+  let persisted = {
+    mode: 'custom',
+    userScope: true,
+    projectScope: true,
+    generation: { prompt: '只记录部署步骤。', onResult: () => {} },
+    consumption: { maxTokens: 2000 },
+  }
+  services.set('configEditor', {
+    entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
+    edit: async (entry, change) => {
+      persisted = change(persisted, {})
+    },
+  })
+
+  const toNative = await callRoute(routes, '/api/memory/mode', { method: 'POST', body: { mode: 'native' } })
+  assert.equal(toNative.status, 200)
+  assert.equal(toNative.json.mode, 'native')
+  // The reply names every removed key, and nothing is removed silently.
+  assert.deepEqual(toNative.json.dropped.sort(), ['consumption.maxTokens', 'generation.prompt'])
+  // What landed is native-legal: the mode, the scopes, and only the allowed callback.
+  assert.equal(persisted.mode, 'native')
+  assert.equal(persisted.generation.prompt, undefined, 'the refused prompt is gone from the file')
+  assert.equal(persisted.consumption, undefined, 'and the emptied block is deleted, not left as {}')
+  assert.equal(typeof persisted.generation.onResult, 'function', 'the one allowed override survives')
+  // The proof: the persisted result is one the plugin ACCEPTS. Before, this is where activation broke.
+  apply(makeCtx(makeFs({}), makeLlm('{}')).ctx, loadConfig(persisted))
+
+  // And the reverse switch removes nothing — `custom` accepts everything.
+  const toCustom = await callRoute(routes, '/api/memory/mode', { method: 'POST', body: { mode: 'custom' } })
+  assert.equal(toCustom.status, 200)
+  assert.deepEqual(toCustom.json.dropped, [])
+  assert.equal(persisted.mode, 'custom')
+})
+
+await test('the mode route refuses an unknown mode rather than guessing one', async () => {
+  const fs = makeFs({})
+  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, loadConfig({ mode: 'custom', generation: { turnComplete: { enabled: false } } }))
+  services.set('configEditor', {
+    entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
+    edit: async () => {
+      throw new Error('must not be called')
+    },
+  })
+  for (const bad of ['nativ', 'auto', 'both', '', '  ', true, null, undefined, 7, {}, []]) {
+    const response = await callRoute(routes, '/api/memory/mode', { method: 'POST', body: { mode: bad } })
+    assert.equal(response.status, 400, `mode=${JSON.stringify(bad)} must be refused`)
+  }
+  assert.match((await callRoute(routes, '/api/memory/mode', { method: 'POST', body: {} })).json.error, /must be one of/)
+})
+
+await test('the mode route normalizes case, the same way the scope route does', async () => {
+  // A form may send `Native`; the vocabulary is exact but the ROUTE is what normalizes. Pinned so the
+  // two write routes cannot come to disagree about how strict they are — `scopes` lowercases too.
+  const fs = makeFs({})
+  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, loadConfig({ mode: 'custom', generation: { turnComplete: { enabled: false } } }))
+  let persisted = { mode: 'custom', userScope: true, projectScope: true }
+  services.set('configEditor', {
+    entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
+    edit: async (entry, change) => {
+      persisted = change(persisted, {})
+    },
+  })
+  const response = await callRoute(routes, '/api/memory/mode', { method: 'POST', body: { mode: '  Native  ' } })
+  assert.equal(response.status, 200)
+  assert.equal(response.json.mode, 'native', 'the reply carries the normalized value, not what was typed')
+  assert.equal(persisted.mode, 'native')
+})
+
+await test('switching to native is what UNLOCKS the cap on the way back', async () => {
+  // The panel's whole reason for exposing the mode: `native` refuses the cap, so a user locked out of
+  // it needs a way back that is not "edit YAML and restart". This walks the round trip and checks the
+  // cap is writable again at the end.
+  const fs = makeFs({})
+  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, loadConfig({ mode: 'custom', generation: { turnComplete: { enabled: false } } }))
+  let persisted = { mode: 'custom', userScope: true, projectScope: true, consumption: { maxTokens: 2000 } }
+  services.set('configEditor', {
+    entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
+    edit: async (entry, change) => {
+      persisted = change(persisted, {})
+    },
+  })
+
+  // Custom: the cap saves.
+  assert.equal((await callRoute(routes, '/api/memory/budget', { method: 'POST', body: { maxTokens: 1500 } })).status, 200)
+  // To native: the cap goes away, and with it the ability to write one.
+  await callRoute(routes, '/api/memory/mode', { method: 'POST', body: { mode: 'native' } })
+  const refused = await callRoute(routes, '/api/memory/budget', { method: 'POST', body: { maxTokens: 900 } })
+  assert.equal(refused.status, 400, 'native refuses the cap')
+  // Back to custom: writable again, with no YAML edit anywhere.
+  await callRoute(routes, '/api/memory/mode', { method: 'POST', body: { mode: 'custom' } })
+  const allowed = await callRoute(routes, '/api/memory/budget', { method: 'POST', body: { maxTokens: 900 } })
+  assert.equal(allowed.status, 200)
+  assert.equal(persisted.consumption.maxTokens, 900)
+})
+
+await test('the status route publishes the mode choices it accepts', async () => {
+  const { routes } = switchFixture()
+  const { json } = await callRoute(routes, '/api/memory/status')
+  assert.deepEqual(json.modeChoices, ['native', 'custom'])
 })
 
 await test('the status payload says whether the cap is writable in this mode', async () => {
