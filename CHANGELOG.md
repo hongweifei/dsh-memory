@@ -367,6 +367,31 @@ false: 0 | false | no  | off              // 其他值一律当"未设置"
   才能改）；**400 与 501 分开**（被插件拒绝是调用者的请求问题，组合没有写入器才是部署差异）。
   规则同时收进两个**叶子模块** `config-rules.js` / `scopes.js`，`config-write.js` 因此排到 schema
   **之上**——它必须能问 `apply()` 问的那个问题。
+- **设置面板的「预览」每次都报"无法预览：no session is in scope"**（用户实测报告，本轮修）。
+  `previewMemory` 要求一个会话，而**设置页是全局界面**：`settings.section` 是 root 作用域、**不传
+  `sessionId`**，且**任何 HTTP 请求都没有 initiator 边界**（`withInitiator` 在生产里只有一个调用点：
+  agent loop 的 driver）——所以 `currentInitiator()` 在路由里**永远**是 `undefined`，那个按钮因此
+  **每次**都失败。修法：把"为哪个会话"抽成一处 **`resolveScopeAgent`**（`memory-switch.js`），
+  `/preview` 和 `/status` 共用，按确定性递减解析：`?session=<id>`（点名）→ 进程内 initiator
+  （命令/工具有）→ **唯一的顶层活会话**（用 `roots()` 而非 `list()`——`list()` 含**子代理**，一个子代理
+  会被误当成"唯一会话"，于是预览去描述那个没人看的子会话）→ 都没有时回答**全局配置**并**明说**
+  （`scope: 'global'`，面板显示一句说明）。会话多于一个时**不猜**（枚举活会话挑一个的代码在本仓库
+  历史里出现过，已删）；点名但已死的会话**409**，不静默回退。会话无关的路径同时容忍无会话：
+  `visibleMemoryState(undefined)` 返回 `undefined`（即"没有基准"→ 全量快照），`runConsumption`
+  改用 `agent?.session?.…`。
+  **宽松解析只用于读**：写入仍走严格的 `resolveLiveAgent`，`/api/memory/switch` 的 `session` 依然必需、
+  指到不存在的 id 依然 409——读错只是显示不准，写错会改掉别人的记忆设置。
+- **同一个根因还让面板撒过一个谎，并且写错过一个目录**（一并修）。三处症状、一个原因（都走
+  `currentInitiator()`，而它在浏览器请求里永远是 `undefined`）：`/status` 的 `memoryMode` 永远是
+  `undefined`，面板渲染成"跟随全局"——**等于告诉一个已被静音的会话它正跟随配置**；`projectFolder` 回落到
+  host 自己的 cwd（通常是 harness home，**不是**用户的项目）；于是**信任按钮的默认目录也是那个错路径**，
+  "信任此目录"会**信任 harness home 而不是项目**——这是**写错目标**，不是显示问题。
+  现在三者共用 `resolveScopeAgent`（`activeSession` 也改成走它）；真解析不出来时面板显示
+  **"无法确定（当前打开了多个会话）"**，而不是回落到"跟随全局"。
+- **这缺陷能活到现在，是因为测试替身 `switchFixture` 调了 `setInitiator(agent)`，喂了生产永远没有的
+  东西**——和上面 `native` 那个缺陷同一类错误。现在有测试**专门不带 initiator** 走 `/preview`、`/status`
+  与 `/api/memory/trust` 三条路由，另有"只有一个子代理时不许当成打开的会话""多于一个会话时不许猜"
+  "点名死会话要 409"。
 - **另外**：`test/integration.test.mjs` 顶部有两处早先损坏的破折号（U+FFFD 替换字符，`HEAD` 里就有），
   已修好；仓库本来就有"任何文件不得带 CP936 损坏"的检查，但替换字符不在它认的那种形态里。
 

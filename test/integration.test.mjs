@@ -247,9 +247,15 @@ function makeCtx(fs, llm) {
    * switch route has to survive by naming its session.
    */
   const liveAgents = []
+  /** Top-level agents, i.e. the sessions a user has open (subagents are NOT in here). */
+  const rootAgents = []
   let initiator
   const agents = {
+    // A COPY, like the real registry: `list()` says "a fresh array; mutating it does not affect the
+    // registry". A test that pushes onto the returned array changes nothing, which is worth the
+    // double mirroring exactly — it caught one of these tests doing precisely that.
     list: () => [...liveAgents],
+    roots: () => [...rootAgents],
     get: (id) => liveAgents.find((agent) => agent.session.id === id),
     currentInitiator: () => initiator,
   }
@@ -302,7 +308,12 @@ function makeCtx(fs, llm) {
     tools,
     agents,
     /** Register a live agent, so `agents.list()`/`get()` can see it. */
-    addAgent: (agent) => liveAgents.push(agent),
+    addAgent: (agent) => {
+      liveAgents.push(agent)
+      rootAgents.push(agent)
+    },
+    /** Register a SUBAGENT: live, but not a session the user has open. */
+    addSubagent: (agent) => liveAgents.push(agent),
     /** Set the process-local initiator (a slash command / tool has one; a route does not). */
     setInitiator: (agent) => {
       initiator = agent
@@ -974,6 +985,37 @@ await test('every route declares methods and a buffered body', async () => {
   assert.deepEqual(routes.get('/api/memory/switch').methods, ['GET', 'POST'])
 })
 
+await test('the trust route resolves the SESSION folder with no initiator — a write on the right target', async () => {
+  // The third instance of the same root cause, and the one that WRITES. `activeFolder` resolved
+  // through `currentInitiator()`, which is `undefined` for every browser request — so `projectFolder`
+  // fell back to the host's own cwd (usually the harness home, NOT the user's project) and the trust
+  // route's default folder was that same wrong path. Pressing "trust this folder" would then trust the
+  // harness home instead of the project, which is a write on the wrong target, not a cosmetic slip.
+  //
+  // Here the only live session is C:\proj, so the route must act on THAT.
+  const fs = makeFs({ [USER_MEMORY]: 'knowledge' })
+  const made = makeCtx(fs, makeLlm('{}'))
+  apply(made.ctx, loadConfig({
+    mode: 'custom',
+    trust: { enabled: true },
+    generation: { turnComplete: { enabled: false } },
+  }))
+  const session = makeSession([], 'C:\\proj')
+  made.addAgent(makeAgent(session))
+  // No initiator: the production condition for a browser request.
+  made.setInitiator(undefined)
+
+  const before = await callRoute(made.routes, '/api/memory/status', {})
+  assert.deepEqual(before.json.projectFolder, { cwd: 'C:\\proj', source: 'session' }, 'the session answered, not the host')
+
+  // A trust request with no folder in the body acts on the session's folder.
+  const allowed = await callRoute(made.routes, '/api/memory/trust', { method: 'POST', body: { action: 'allow' } })
+  assert.equal(allowed.status, 200)
+  assert.equal(allowed.json.folder, 'C:\\proj', 'trust must not land on the host cwd')
+  const store = JSON.parse(fs.files.get(`${HOME}\\trusted-folders.json`))
+  assert.deepEqual(store.folders, ['C:\\proj'])
+})
+
 await test('the trust route grants and revokes, and rejects a bad action', async () => {
   const fs = makeFs({ [USER_MEMORY]: 'knowledge' })
   const { ctx, routes, setInitiator } = makeCtx(fs, makeLlm('{}'))
@@ -1316,7 +1358,12 @@ await test('previewMemory describes the next step without changing it', async ()
   assert.equal(deltaDecision.messages[0].content[0].text, third.step.text)
 })
 
-await test('previewMemory reports a changed config as a fresh snapshot, and unavailability honestly', async () => {
+await test('previewMemory answers for the GLOBAL configuration when no session is in scope', async () => {
+  // A settings page is a global surface: `settings.section` is root-scoped and receives no
+  // `sessionId`, and no HTTP request carries an initiator boundary. So a preview with no session is
+  // NOT an error — it is the normal case there, and it has an honest answer: what a session starting
+  // now would receive. (This test previously asserted `available: false` with "no session is in
+  // scope", which is exactly what made the panel's button fail every time in production.)
   const fs = makeFs({ [USER_MEMORY]: 'knowledge' })
   const { ctx, listeners, services } = makeCtx(fs, makeLlm('{}'))
   apply(ctx, loadConfig({
@@ -1325,14 +1372,22 @@ await test('previewMemory reports a changed config as a fresh snapshot, and unav
     generation: { turnComplete: { enabled: false } },
   }))
   const service = services.get('memory')
+  // A session that HAS seen memory, so a sessionless preview is distinguishable from a live one.
   const agent = makeAgent(makeSession([], 'C:\\proj'))
   await runPreStep(listeners, agent)
 
-  // A preview with no session cannot answer: it has no cwd, no roots and no
-  // baseline, so it says so rather than inventing a block for nobody.
-  const orphan = await service.previewMemory(undefined)
-  assert.equal(orphan.available, false)
-  assert.match(orphan.reason, /no session/)
+  const global = await service.previewMemory(undefined)
+  assert.equal(global.available, true, 'no session must still produce a preview')
+  assert.equal(global.scope, 'global', 'and must say which question it answered')
+  assert.equal(global.mode, 'auto', 'a session that was never pinned follows the configuration')
+  assert.equal(global.session.id, undefined, 'there is no session id to report')
+  assert.match(global.snapshot.text, /knowledge/, 'it still reads the real memory files')
+  assert.ok(fs.reads.length > 0)
+
+  // And a LIVE preview is labelled as such, so the panel can tell the two claims apart.
+  const live = await service.previewMemory(agent)
+  assert.equal(live.scope, 'session')
+  assert.equal(live.session.id, agent.session.id)
 
   // Consumption disabled is its own reason, not an empty preview.
   const off = makeCtx(makeFs({}), makeLlm('{}'))
@@ -3305,10 +3360,14 @@ function switchFixture(options = {}) {
   )
   const session = makeSession([], 'C:\\proj')
   const agent = makeAgent(session)
-  made.addAgent(agent)
-  // The preview and refresh routes speak for the initiator; a browser request usually
-  // has none, which is why the switch ROUTE names its session instead.
-  made.setInitiator(agent)
+  // `noInitialAgent` leaves the registry EMPTY, so a test can express "nothing open" or register
+  // only a subagent. Every other fixture registers one top-level agent and sets it as the initiator.
+  if (options.noInitialAgent !== true) {
+    made.addAgent(agent)
+    // The preview and refresh routes speak for the initiator; a browser request usually
+    // has none, which is why the switch ROUTE names its session instead.
+    made.setInitiator(agent)
+  }
   return { fs, llm, session, agent, ...made }
 }
 
@@ -3512,6 +3571,49 @@ await test('`project` mode is not a mute: generation still records', async () =>
   log.turn(listeners, agent, 1, 'a long enough prompt to pass the gate')
   await service.flushMemory()
   assert.equal(llm.calls.length, 1, 'a project-scoped session still records its own work')
+})
+
+await test('`/status` reports a muted session WITHOUT an initiator — the production condition', async () => {
+  // The same root cause as the preview defect, in the row next to it. `/status` resolved its session
+  // through `currentInitiator()`, which is `undefined` for EVERY browser request, so `memoryMode` was
+  // always `undefined` — and the panel renders that as "follows the global configuration". In other
+  // words the panel told a session the user had explicitly MUTED that it was following the
+  // configuration: a lie of exactly the kind this plugin refuses elsewhere.
+  //
+  // Also pins that the fix is confined to READS: a write still names its session.
+  const { routes, session, setInitiator } = switchFixture({
+    files: { [SWITCH_STORE]: JSON.stringify({ version: 2, sessions: { 'session-1': 'off' } }) },
+  })
+  setInitiator(undefined)
+  const status = await callRoute(routes, '/api/memory/status')
+  assert.equal(status.json.memoryMode, 'off', 'a muted session must not be reported as following the config')
+  assert.equal(status.json.memorySwitch.available, true)
+  void session
+
+  // And the WRITE path is unchanged: no session named is still refused, so a route can never switch
+  // whichever session happens to be live. 409 (conflict), not 400 — the request is well-formed and the
+  // route simply cannot identify the target; that is the documented contract of this route.
+  const wrote = await callRoute(routes, '/api/memory/switch', { method: 'POST', body: { mode: 'project' } })
+  assert.equal(wrote.status, 409, 'a write must still name its session')
+  assert.match(wrote.json.error, /session is required/)
+
+  // And a named-but-dead session is refused too, rather than falling back to the live one.
+  const dead = await callRoute(routes, '/api/memory/switch', { method: 'POST', body: { session: 'session-gone', mode: 'project' } })
+  assert.equal(dead.status, 409)
+  assert.match(dead.json.error, /no live session/)
+})
+
+await test('`/status` refuses to guess between several live sessions', async () => {
+  // One candidate is not a guess; two is. With no initiator and two open sessions the honest report
+  // is "no session in scope" (undefined), not a coin flip that would show one session's mode as if it
+  // were the other's.
+  const { routes, addAgent, setInitiator } = switchFixture({
+    files: { [SWITCH_STORE]: JSON.stringify({ version: 2, sessions: { 'session-1': 'off' } }) },
+  })
+  setInitiator(undefined)
+  addAgent(makeAgent(makeSession([], 'C:\\other')))
+  const status = await callRoute(routes, '/api/memory/status')
+  assert.equal(status.json.memoryMode, undefined, 'two candidates means no session in scope')
 })
 
 await test('the mode survives a restart, and a v1 store still mutes', async () => {
@@ -3810,6 +3912,87 @@ await test('the preview route answers a REAL preview, not a 500', async () => {
   assert.match(response.json.snapshot.text, /user knowledge/)
   assert.ok(response.json.snapshot.tokens > 0)
   assert.ok(fs.reads.length > 0, 'an unmuted preview really reads the memory files')
+})
+
+await test('the preview route works with NO initiator — the production condition', async () => {
+  // THE regression test for the reported defect. Every preview test before this one ran through
+  // `switchFixture`, which calls `setInitiator(agent)` — supplying exactly what a real browser
+  // request never has. `withInitiator`'s only production caller is the agent loop's driver, so
+  // `currentInitiator()` is `undefined` for every HTTP request, and the old code turned that into
+  // "no session is in scope" EVERY time the user pressed the button.
+  //
+  // So: no initiator, one live session (the user is chatting in one and opens Settings).
+  const { routes, fs, agent, setInitiator } = switchFixture()
+  setInitiator(undefined)
+  const response = await callRoute(routes, '/api/memory/preview')
+  assert.equal(response.status, 200, `must not fail: ${JSON.stringify(response.json)}`)
+  assert.equal(response.json.available, true, 'the button must produce a preview, not an error')
+  assert.equal(response.json.scope, 'session', 'the ONE live session is not a guess')
+  assert.equal(response.json.session.id, agent.session.id)
+  assert.match(response.json.snapshot.text, /user knowledge/)
+  assert.ok(fs.reads.length > 0)
+})
+
+await test('with no initiator AND no live session, the preview answers for the global configuration', async () => {
+  // A settings page with nothing open. Still an honest answer — what a session starting now gets —
+  // rather than an error about a session that does not exist. Built directly rather than through
+  // `switchFixture`, which always registers one agent.
+  const fs = makeFs({ [USER_MEMORY]: 'user knowledge' })
+  const made = makeCtx(fs, makeLlm('{}'))
+  apply(made.ctx, loadConfig({ mode: 'custom', userScope: true, projectScope: true, generation: { turnComplete: { minPromptChars: 1 } } }))
+  made.setInitiator(undefined)
+  assert.equal(made.ctx.get('agents').list().length, 0, 'the fixture must have no live session')
+
+  const response = await callRoute(made.routes, '/api/memory/preview')
+  assert.equal(response.status, 200)
+  assert.equal(response.json.available, true)
+  assert.equal(response.json.scope, 'global')
+  assert.match(response.json.snapshot.text, /user knowledge/, 'the global configuration still reads memory')
+  assert.ok(fs.reads.length > 0)
+})
+
+await test('with SEVERAL live sessions and no initiator, the route refuses to guess', async () => {
+  // The reason this matters: enumerating live sessions and picking one is how a preview describes
+  // somebody else's session. With more than one candidate the route cannot know which, and the
+  // global answer is the only honest one. (`list()` returns a COPY, so the extra agent has to go in
+  // through `addAgent` — a `push` on the returned array mutates nothing.)
+  const { routes, ctx, agent, addAgent, setInitiator } = switchFixture()
+  setInitiator(undefined)
+  addAgent(makeAgent(makeSession([], 'C:\\other')))
+  assert.equal(ctx.get('agents').list().length, 2)
+  const response = await callRoute(routes, '/api/memory/preview')
+  assert.equal(response.status, 200)
+  assert.equal(response.json.scope, 'global', 'two candidates means no guessing')
+  assert.notEqual(response.json.session.id, agent.session.id)
+})
+
+await test('a lone SUBAGENT is not mistaken for the session the user is looking at', async () => {
+  // `list()` includes subagents. If the fallback used it, a session with one subagent and no other
+  // live agent would look like "the only candidate", and the preview would describe the CHILD's step
+  // — a preview for a session nobody is looking at. `roots()` excludes subagents, so the correct
+  // answer here is the global one, not the subagent.
+  const { routes, addSubagent, setInitiator } = switchFixture({ noInitialAgent: true })
+  setInitiator(undefined)
+  addSubagent(makeAgent(makeSession([], 'C:\\proj-sub')))
+  const response = await callRoute(routes, '/api/memory/preview')
+  assert.equal(response.status, 200)
+  assert.equal(response.json.scope, 'global', 'a subagent alone is not the open session')
+})
+
+await test('?session names the session to preview, and an unknown one is refused', async () => {
+  // The honest form for a caller that knows its session. A NAMED but dead session is a 409, not a
+  // silent fallback: previewing a different session than the one asked for would be the very bug
+  // the resolution order exists to avoid.
+  const { routes, agent, setInitiator } = switchFixture()
+  setInitiator(undefined)
+  const named = await callRoute(routes, '/api/memory/preview', { query: `?session=${agent.session.id}` })
+  assert.equal(named.status, 200)
+  assert.equal(named.json.session.id, agent.session.id)
+  assert.equal(named.json.scope, 'session')
+
+  const missing = await callRoute(routes, '/api/memory/preview', { query: '?session=session-does-not-exist' })
+  assert.equal(missing.status, 409, 'a named session that is not live must not fall back')
+  assert.match(missing.json.error, /no live session/)
 })
 
 await test('a preview of a muted session says the switch is why, without running the pass', async () => {

@@ -105,6 +105,10 @@ const STATUS = {
  */
 const PREVIEW = {
   available: true,
+  // Which question this answered. The Host sends this always: with a session in scope it previews
+  // that session's next step, and with none it previews what a session starting now would receive
+  // (and the panel then says so). This fixture has a session, so it is the former.
+  scope: 'session',
   session: { id: 'session-1', cwd: 'D:\\code\\demo' },
   step: {
     action: 'silent',

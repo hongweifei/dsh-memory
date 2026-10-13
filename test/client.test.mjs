@@ -392,6 +392,72 @@ await test('the panel degrades the scope control to read-only when this composit
   assert.match(none.text, /<button>Save\n/, 'the state is still writable, so it can be left')
 })
 
+await test('the panel says it cannot tell which session it is about, instead of guessing', async () => {
+  // With several sessions open and none named, the Host reports no session rather than picking one.
+  // The panel must not turn that into "follows the global configuration" — that would be asserting a
+  // fact it does not have, which is the exact class of bug this row just had (it reported `auto` for
+  // every session, because the route resolved through an initiator a browser request never has).
+  const known = await renderWithStatus({ ...STATUS, memoryMode: 'off' })
+  assert.match(known.text, /Memory in this session\n<span>Off\n/, 'a real mode is still reported')
+
+  const unknown = await renderWithStatus({ ...STATUS, memoryMode: undefined })
+  assert.match(unknown.text, /Memory in this session\n<span>not determinable \(several sessions are open\)\n/)
+  assert.doesNotMatch(unknown.text, /Memory in this session\n<span>Auto/, 'must NOT default to Auto')
+
+  const zh = await renderWithStatus({ ...STATUS, memoryMode: undefined }, 'zh')
+  assert.match(zh.text, /无法确定（当前打开了多个会话）/, 'and it is translated')
+})
+
+await test('the preview says WHICH question it answered when no session is in scope', async () => {
+  // The settings page is a global surface. When the Host had no session to speak for, the preview
+  // describes what a session starting NOW would receive — a different claim from "your next step".
+  // Both are useful; showing an error instead is what made the button useless, and conflating the two
+  // would be a panel that lies about what it read.
+  const clickPreview = async (previewPayload) => {
+    const registration = loadBundle(async (url) => {
+      if (String(url).includes('/preview')) return { ok: true, json: async () => previewPayload }
+      return { ok: true, json: async () => (String(url).includes('/status') ? STATUS : { ok: true }) }
+    })
+    const clientPlugin = registration.factory((specifier) => React)
+    const { registrations, locale } = registerComponent(clientPlugin)
+    const { options, component } = registrations[0]
+    locale.setActive('en')
+    let renderer
+    await act(async () => {
+      renderer = TestRenderer.create(React.createElement(component, slotProps(locale, options)))
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    // The preview body sits behind a button, so it must actually be clicked.
+    const button = renderer.root.findAll((node) => node.type === 'button' && String(node.children.join('')) === 'Preview')[0]
+    await act(async () => {
+      button.props.onClick()
+      await Promise.resolve()
+    })
+    const text = collectText(renderer.toJSON())
+    renderer.unmount()
+    return text
+  }
+
+  const block = { text: 'BLOCK', status: 'loaded', tokens: 12, maxTokens: 2000, included: [], omitted: [], truncated: [], overflowed: false }
+  const global = await clickPreview({
+    available: true, mode: 'auto', scope: 'global', session: { cwd: 'D:\\proj' },
+    step: { action: 'snapshot', reason: 'no baseline', tokens: 12, text: 'BLOCK', changed: [], removed: [] },
+    snapshot: block, files: [],
+  })
+  assert.match(global, /No session is open, so this is what a session starting now would receive\./)
+  assert.match(global, /BLOCK/, 'the block itself still renders')
+
+  // A LIVE preview must NOT carry that note — it answers a different question.
+  const live = await clickPreview({
+    available: true, mode: 'auto', scope: 'session', session: { id: 'session-aaaa', cwd: 'D:\\proj' },
+    step: { action: 'silent', reason: 'unchanged', tokens: 0, text: '', changed: [], removed: [] },
+    snapshot: block, files: [],
+  })
+  assert.doesNotMatch(live, /No session is open/)
+})
+
 await test('the panel offers the MODE, which is the way back in from a locked cap', async () => {
   // Without this row, a user whose plugin runs `native` cannot change the injection cap from the panel
   // at all — they would have to hand-edit YAML and restart. So the mode is not a decoration: it is the

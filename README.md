@@ -281,6 +281,49 @@ Qoder 的 `memory` / `memory_get` 在本插件叫 `memory_list` / `memory_read`�
 该测试立刻以 `the preview must not have consumed the snapshot` 失败**。
 预览是**按需**的 `GET /api/memory/preview`，不挂在 5 秒一次的 status 轮询上（那会每 5 秒重读整个记忆块）。
 
+**"为哪个会话预览"：路由按确定性递减的顺序解析，猜不出来就说不猜。**（这一段是修用户实测缺陷时写的。）
+
+顺序由 **`resolveScopeAgent`** 一处定义（`memory-switch.js`），`/api/memory/preview` 和 `/api/memory/status`
+共用它，所以两个界面不可能对"哪个会话在作用域内"给出不同答案：
+
+1. **`?session=<id>`** —— 调用者点名。知道自己会话的调用者应该用这个，也是唯一"确知"的形式。
+2. **进程内的 initiator** —— 斜杠命令和 `memory` 工具有。
+3. **唯一的顶层活会话** —— 只有**一个**候选时用它。**浏览器请求永远没有 initiator**
+   （`withInitiator` 在生产里只有一个调用点：agent loop 的 driver），所以没有这一条，
+   面板的预览就**永远**说不出用户正在聊的那个会话——而这正是这个按钮的意义。一个候选不是猜：
+   没有别的可能。
+   用的是 **`roots()` 而不是 `list()`**：`list()` **包含子代理**，于是"一个子代理"会被当成
+   "唯一的会话"，预览就会去描述那个**没有人看的**子会话。`roots()` 才是用户打开的那些会话。
+4. **没有** —— 预览回答**全局配置**下的内容（"现在新开会话会收到什么"），并且**明说**这是哪个问题
+   （`scope: 'global'`，面板显示一句说明），不假装读过某个活会话。
+
+**故意不做的**：会话多于一个时枚举活会话挑一个（那段代码在本仓库历史里出现过，已删）。多于一个候选时
+路由无法知道是哪个，为错误的会话编一个答案比报告全局更糟。**点名但已死的会话是 409**，不静默回退——
+预览一个和你要的不一样的会话，正是上面这个顺序要避免的事。
+
+**读可以这样解析，写不行。** `resolveLiveAgent`（严格版：只认点名或 initiator）仍然是**写入**路径用的那个，
+`/api/memory/switch` 的 `session` 依然必需、指到不存在的 id 依然 409。读错一个会话只是显示得不准，
+**写错一个会话会改掉别人的记忆设置**——所以宽松的解析只用在读上，而且写路径的 409 有测试盯着。
+
+**同一个根因还让面板撒过一个谎，并且写错过一个目录。** 三处症状、一个原因（都走 `currentInitiator()`，
+而它在浏览器请求里永远是 `undefined`）：
+
+| 症状 | 后果 |
+|---|---|
+| `/status` 的 `memoryMode` | 永远是 `undefined`，面板渲染成"跟随全局"——**等于告诉一个已被静音的会话它正跟随配置** |
+| `projectFolder` | 回落到 host 自己的 cwd（通常是 harness home，**不是**用户的项目） |
+| 信任按钮的默认目录 | 同上——于是"信任此目录"会**信任 harness home 而不是项目**，这是**写错目标**，不是显示问题 |
+
+现在三者共用 `resolveScopeAgent`（`activeSession` 也改成走它）。真的解析不出来时（打开了多个会话、
+没点名），面板显示**"无法确定（当前打开了多个会话）"**而不是回落到"跟随全局"——不知道就说不知道。
+
+**这个缺陷为什么能活到现在**：`switchFixture` 调了 `setInitiator(agent)`，**喂了生产环境永远没有的东西**，
+所以 4 条预览测试全绿而用户每次按都失败。现在有测试**专门不带 initiator** 走 `/preview`、`/status` 和
+`/api/memory/trust` 三条路由（"the preview route works with NO initiator — the production condition"、
+"`/status` reports a muted session WITHOUT an initiator"、
+"the trust route resolves the SESSION folder with no initiator"），
+以及"只有一个子代理时不许当成打开的会话""多于一个会话时不许猜""点名死会话要 409"。
+
 两个做不到的地方，如实标注：harness 的 `FsInfo` 只有 `version/type/size`、**没有修改时间**，
 所以显示的是**占用大小**而不是"更新于某时"；harness 也**没有"在文件管理器里打开"的能力**
 （曾实现过 `POST /api/memory/reveal` + `subprocess` 打开器，在本机点不开，已按用户要求撤掉）。

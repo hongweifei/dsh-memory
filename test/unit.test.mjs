@@ -23,6 +23,7 @@ import {
   parsePlan,
   textOf,
   memoryIdentity,
+  visibleMemoryState,
   generationSystemPrompt,
   validateRoots,
   validateConsumptionFiles,
@@ -63,6 +64,7 @@ import {
   isStoredSessionMode,
   scopedConfig,
   SESSION_MODES,
+  resolveScopeAgent,
   merge,
   judgeConfig,
   isOverridable,
@@ -1612,6 +1614,49 @@ test('pruneForNative deletes an emptied block, and tolerates a hand-edited one',
   // A non-object block is left alone rather than throwing: this must not be what breaks a switch on a
   // profile somebody hand-edited.
   assert.deepEqual(pruneForNative({ generation: 'nonsense' }).dropped, [])
+})
+
+test('visibleMemoryState returns undefined without a session, instead of throwing', () => {
+  // The settings panel has NO session (its slot is root-scoped and receives no `sessionId`), so the
+  // preview path reaches here with `undefined`. "No session, no durable surface" is the correct
+  // answer — it is what makes a sessionless preview report a full snapshot. Without this guard the
+  // dereference threw, and the panel's button reported "no session is in scope" every time.
+  assert.equal(visibleMemoryState(undefined, 'identity'), undefined)
+  assert.equal(visibleMemoryState(null, 'identity'), undefined)
+  // A session with no surface is also "no baseline", not a crash.
+  assert.equal(visibleMemoryState({ surface: undefined }, 'identity'), undefined)
+})
+
+test('resolveScopeAgent picks the session a READ may use, most certain first', () => {
+  // The order this encodes is what fixed the panel's preview and its "this session's memory" row: a
+  // browser request has NO initiator (`withInitiator`'s only production caller is the agent loop's
+  // driver), so resolving strictly through `currentInitiator()` made every read-only surface report
+  // "nothing in scope" or, worse, "follows the global configuration" for a session that was muted.
+  const a = { session: { id: 'a' } }
+  const b = { session: { id: 'b' } }
+  const ctxFor = ({ initiator, roots, list }) => ({
+    get: (name) => (name === 'agents'
+      ? { currentInitiator: () => initiator, roots: roots === undefined ? undefined : () => roots, list: list === undefined ? undefined : () => list, get: (id) => [a, b].find((x) => x.session.id === id) }
+      : undefined),
+  })
+
+  // 1. A named id wins, even when an initiator and a sole live agent disagree with it.
+  assert.equal(resolveScopeAgent(ctxFor({ initiator: b, roots: [a] }), 'a'), a)
+  // A named id that does NOT resolve is nothing — never a fallback to the initiator or the sole agent.
+  assert.equal(resolveScopeAgent(ctxFor({ initiator: b, roots: [a] }), 'missing'), undefined)
+  // 2. Then the initiator.
+  assert.equal(resolveScopeAgent(ctxFor({ initiator: b, roots: [a, a] })), b)
+  // 3. Then the ONLY top-level agent.
+  assert.equal(resolveScopeAgent(ctxFor({ initiator: undefined, roots: [a] })), a)
+  // 4. Nothing when there are several: two candidates is a guess, and a read that guesses shows one
+  //    session's mode as another's.
+  assert.equal(resolveScopeAgent(ctxFor({ initiator: undefined, roots: [a, b] })), undefined)
+  assert.equal(resolveScopeAgent(ctxFor({ initiator: undefined, roots: [] })), undefined)
+  // A host without `roots()` falls back to `list()` rather than resolving nothing.
+  assert.equal(resolveScopeAgent(ctxFor({ initiator: undefined, roots: undefined, list: [a] })), a)
+  assert.equal(resolveScopeAgent(ctxFor({ initiator: undefined, roots: undefined, list: [a, b] })), undefined)
+  // A context with no `agents` service at all is not a crash.
+  assert.equal(resolveScopeAgent({ get: () => undefined }), undefined)
 })
 
 console.log(`\n${passed} tests passed`)
