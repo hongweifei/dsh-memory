@@ -11,6 +11,7 @@ import { deleteGuarded, memoryGuard, readVersioned } from '../lib/fs.js'
 import { FAILURE_PAUSE_DEFAULT, advanceFailurePause, pausedOutcome, resumePaused } from '../lib/failure-pause.js'
 import { collectTouchedPaths, isJitActive, jitDecision, parseJitTrigger } from '../lib/jit.js'
 import { indexWarnings } from '../lib/memory-file.js'
+import { applyEdit } from '../lib/memory-edit.js'
 import { GLOBAL_CONSEQUENCE, MODE_CONSEQUENCE } from '../lib/commands-report.js'
 import {
   Config,
@@ -1657,6 +1658,66 @@ test('resolveScopeAgent picks the session a READ may use, most certain first', (
   assert.equal(resolveScopeAgent(ctxFor({ initiator: undefined, roots: undefined, list: [a, b] })), undefined)
   // A context with no `agents` service at all is not a crash.
   assert.equal(resolveScopeAgent({ get: () => undefined }), undefined)
+})
+
+test('applyEdit replaces one unique passage, and refuses an ambiguous one', () => {
+  // The semantics mirror the Harness's own `edit` tool, so a model transfers its habits rather than
+  // learning a second dialect: `old_string` must be unique unless `replace_all` is set.
+  const body = '---\nname: Build\n---\n\nrun npm test\n\nrun npm test\n'
+  const one = applyEdit(body, 'name: Build', 'name: Build & test', false)
+  assert.equal(one.ok, true)
+  assert.equal(one.replacements, 1)
+  assert.match(one.text, /name: Build & test/)
+  assert.match(one.text, /run npm test\n\nrun npm test/, 'the rest is untouched')
+
+  // Ambiguity is the failure mode worth refusing: picking the first match would edit a passage the
+  // caller never saw.
+  const ambiguous = applyEdit(body, 'run npm test', 'run npm ci', false)
+  assert.equal(ambiguous.ok, false)
+  assert.match(ambiguous.reason, /appears 2 times/)
+  assert.match(ambiguous.reason, /replace_all/, 'and it says how to proceed')
+
+  // The opt-in replaces every occurrence.
+  const all = applyEdit(body, 'run npm test', 'run npm ci', true)
+  assert.equal(all.ok, true)
+  assert.equal(all.replacements, 2)
+  assert.equal(all.text.split('run npm ci').length - 1, 2)
+
+  // Not found is its own answer, not a silent no-op.
+  const missing = applyEdit(body, 'never here', 'x', false)
+  assert.equal(missing.ok, false)
+  assert.match(missing.reason, /not found/)
+})
+
+test('applyEdit replaces LITERALLY, so `$&` in the replacement is not expanded', () => {
+  // `String.prototype.replace` treats `$&`, `$1` and `` $` `` as patterns in the REPLACEMENT. Memory
+  // bodies contain code samples, so a body holding those sequences would be silently rewritten into
+  // something the caller never asked for. Both paths must insert text verbatim.
+  const body = 'cost: 100 USD\n'
+  const result = applyEdit(body, '100 USD', 'the $& price ($1) and `$`', false)
+  assert.equal(result.ok, true)
+  assert.equal(result.text, 'cost: the $& price ($1) and `$`\n', 'the replacement is literal')
+
+  const all = applyEdit('a\nX\nb\nX\n', 'X', '$&', true)
+  assert.equal(all.ok, true)
+  assert.equal(all.text, 'a\n$&\nb\n$&\n')
+
+  // An empty replacement is how a passage is deleted — legal, and not confused with "no argument".
+  const removed = applyEdit('keep\ndrop me\nkeep\n', 'drop me\n', '', false)
+  assert.equal(removed.ok, true)
+  assert.equal(removed.text, 'keep\nkeep\n')
+})
+
+test('applyEdit refuses an empty or non-string old_string instead of matching everywhere', () => {
+  // `''` matches at every position, so "how many times" is meaningless and "replace the first" is
+  // arbitrary. The Harness refuses it for the same reason.
+  assert.equal(applyEdit('abc', '', 'x', false).ok, false)
+  assert.match(applyEdit('abc', '', 'x', false).reason, /non-empty/)
+  assert.equal(applyEdit('abc', undefined, 'x', false).ok, false)
+  // A non-string replacement is a caller bug, not an instruction to stringify something.
+  assert.equal(applyEdit('abc', 'b', undefined, false).ok, false)
+  // An empty file has nothing to match.
+  assert.equal(applyEdit('', 'x', 'y', false).ok, false)
 })
 
 console.log(`\n${passed} tests passed`)

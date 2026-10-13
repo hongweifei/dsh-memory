@@ -46,7 +46,7 @@ const LAYERS = [
   // write path has to be able to ask "would the plugin accept this?" before persisting, and a
   // configuration the plugin rejects does not fail to apply — it makes the plugin fail to activate.
   ['config-rules.js', 'scopes.js'],
-  ['config.js', 'tokens.js', 'fs.js', 'paths.js', 'memory-file.js'],
+  ['config.js', 'tokens.js', 'fs.js', 'paths.js', 'memory-file.js', 'memory-edit.js'],
   // The write path sits ABOVE the schema on purpose: to refuse a configuration before persisting it,
   // it must ask the same question `apply()` asks, which means the real schema and the real rules.
   // A hand-rolled approximation here is what missed the `native` default (see `judgeConfig`).
