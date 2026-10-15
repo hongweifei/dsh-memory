@@ -27,6 +27,11 @@ const STATUS = {
   // `consumptionWritable: true` renders a state the plugin cannot actually be in.
   mode: 'custom',
   generationEnabled: true,
+  // Which of the two policy switches an env var overrides; empty, so both are editable here.
+  envPinned: [],
+  // The consolidation switch, which the panel now renders as an EDITABLE toggle. A fixture that omitted
+  // it would render the toggle from `undefined` — the "fixture lies" trap this file already documents.
+  dreamEnabled: true,
   consumptionEnabled: true,
   maxTokens: 2000,
   // The legal floor for the cap, which the panel puts on its input's `min`.

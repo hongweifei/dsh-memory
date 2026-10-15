@@ -230,6 +230,9 @@ const STATUS = {
   // comment warns about, so they are stated rather than left out.
   maxWrites: 0,
   maxWriteBytes: 0,
+  // Which of the two policy switches an environment variable overrides. Empty here, so both are
+  // editable. The real route always sends an array.
+  envPinned: [],
   // The session's own mode, which the panel reports read-only (the control is in the composer).
   memoryMode: 'auto',
   lastGeneration: { status: 'saved', turnIndex: 3, writtenFiles: [], failedFiles: [] },
@@ -573,6 +576,32 @@ await test('the panel reports the write budget read-only where the plugin would 
   assert.doesNotMatch(json, /aria-label|Files per pass/, 'the editable fields must not be offered')
   assert.match(text, /no limit/, 'the 0 budget is reported as "no limit"')
   assert.match(text, /16384/, 'and a real limit is reported as its number')
+})
+
+await test('the panel offers the two policy switches, and reports an env-pinned one', async () => {
+  // Qoder's `auto_memory_policy` / `auto_dream`, editable. They are two toggles but ONE write, so the
+  // Save is offered whenever either moved.
+  const { text, json } = await renderWithStatus(STATUS)
+  assert.match(text, /Automatic/, 'the first switch is labelled')
+  assert.match(text, /Consolidation/, 'and the second keeps its existing term')
+  assert.match(json, /dshmem-policy-enabled/, 'the pass toggle renders')
+  assert.match(json, /dshmem-policy-dream/, 'the dream toggle renders')
+  assert.match(text, /Turning the pass off also disables its per-turn trigger/)
+
+  // An env-pinned switch is SAID OUT LOUD: `DSH_MEMORY_DREAM=false` overrides the config, so the
+  // toggle would silently do nothing. A switch that cannot take effect is worse than an absent one.
+  const pinned = await renderWithStatus({ ...STATUS, envPinned: ['dream'] })
+  assert.match(pinned.text, /pinned by an environment variable/)
+  assert.match(pinned.text, /dream/, 'and it names which one')
+
+  // Under `native` the whole `generation.*` block is refused, so the controls degrade to read-only
+  // rows showing the same values — never a dead control. (`Tag` renders a real `<span>`, and `OnOff`
+  // inside it prints the `on`/`off` badge, so the row reads `Generation` then that badge.)
+  const native = await renderWithStatus({ ...STATUS, consumptionWritable: false })
+  assert.doesNotMatch(native.json, /dshmem-policy-enabled/, 'no dead control under native')
+  assert.doesNotMatch(native.json, /dshmem-policy-dream/, 'and no dead dream toggle either')
+  assert.match(native.text, /Generation\n<span>on/, 'the value is still reported')
+  assert.match(native.text, /Consolidation\n<span>on/, 'both switches are reported')
 })
 
 await test('the panel offers the MODE, which is the way back in from a locked cap', async () => {
@@ -1579,7 +1608,7 @@ await test('the panel talks only to the /api/memory routes', () => {
   // own truncation rather than on a stray path.
   const paths = [...source.matchAll(/['"](\/api\/memory\/[a-z-]+)/g)].map((match) => match[1])
   assert.ok(paths.length > 0)
-  const known = ['/api/memory/status', '/api/memory/file', '/api/memory/preview', '/api/memory/refresh', '/api/memory/flush', '/api/memory/trust', '/api/memory/switch', '/api/memory/budget', '/api/memory/scope', '/api/memory/mode', '/api/memory/write-budget']
+  const known = ['/api/memory/status', '/api/memory/file', '/api/memory/preview', '/api/memory/refresh', '/api/memory/flush', '/api/memory/trust', '/api/memory/switch', '/api/memory/budget', '/api/memory/scope', '/api/memory/mode', '/api/memory/write-budget', '/api/memory/generation']
   for (const path of paths) {
     assert.ok(known.includes(path), `unexpected route ${path}`)
   }

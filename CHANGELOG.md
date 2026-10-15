@@ -20,6 +20,26 @@
 
 ### 新增
 
+**两个策略开关（`auto_memory_policy` / `auto_dream`）可在设置面板里改**
+
+- 面板「状态」区新增**生成**一行：**自动记录**（`generation.enabled` = Qoder 的
+  `auto_memory_policy.enabled`）与**记忆巩固**（`generation.dream.enabled` = `auto_dream.enabled`）
+  两个下拉 + 一个保存按钮（`POST /api/memory/generation`）。二者是一个决定的两半，共同一个保存，
+  不会出现"改了一个、另一个没存"。
+- **关掉「自动记录」会连带关掉它的「每轮触发」**：SDK 拒绝 `generation.enabled: false` 旁边
+  `turnComplete.enabled: true`，只写前者会让这次写入**被拒**、开关看起来像坏了。路由把它一起改，
+  **并回报改了哪个键**（`implied`），面板照实显示——一个悄悄改邻居的开关就是在消耗信任。反过来打开时
+  恢复它，所以"开"真的意味着自动记录又跑起来。只在触发**明确为 true** 时才动它：规则只在该组合下咬，
+  凭空补一个用户没写过的 `turnComplete` 是往配置里塞东西。
+- **不做真值转换**：值必须是 `true`/`false` 两种拼写之一。`<select>` 可能发字符串 `"false"`，那正是最容易
+  被当成 `true` 的形态；`1` / `'yes'` / `'on'` 一律 400。有反证。
+- **被环境变量固定的开关会说明**：`DSH_MEMORY_HEADLESS` / `DSH_MEMORY_DREAM` 盖过配置，所以那种情况下
+  开关按了也不生效。`/status` 新增 `envPinned`，面板列出来并写明原因——不能生效的开关比没有更糟。
+- **默认值照 Qoder，但「自动记录」刻意相反**：Qoder 两个开关默认都是 `false`（自动记忆在那边是要显式打开的
+  功能）；本插件是装来用的插件，所以 `generation.enabled` 默认 `true`，`dream.enabled` 照 Qoder 默认
+  `false`（它每次多花一次模型调用）。这是刻意的差异，不是没对齐。
+- `generation.*` **在 `native` 下被拒绝**，与注入上限同一条铁律，所以那个模式下面板只报告值、不给控件。
+
 **写入预算默认改为不设上限，并可在设置面板里改**
 
 - **`generation.maxWrites` 与 `maxWriteBytes` 的默认值改为 `0`＝不设上限**（原为 4 / 16384）。

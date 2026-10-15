@@ -974,6 +974,7 @@ await test('every route declares methods and a buffered body', async () => {
     '/api/memory/budget',
     '/api/memory/file',
     '/api/memory/flush',
+    '/api/memory/generation',
     '/api/memory/mode',
     '/api/memory/preview',
     '/api/memory/refresh',
@@ -4354,6 +4355,132 @@ await test('the status payload publishes the write budget, so the panel can show
   const published = await callRoute(configured.routes, '/api/memory/status')
   assert.equal(published.json.maxWrites, 7)
   assert.equal(published.json.maxWriteBytes, 4096)
+})
+
+await test('the generation route flips the two Qoder policy switches', async () => {
+  // `generation.enabled` is Qoder's `auto_memory_policy.enabled` (the automatic per-turn pass) and
+  // `generation.dream.enabled` is `auto_dream.enabled`. Both were read-only in the panel before this.
+  const fs = makeFs({})
+  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, loadConfig({ mode: 'custom', generation: { turnComplete: { enabled: false } } }))
+  let persisted = { mode: 'custom', generation: { turnComplete: { enabled: false } } }
+  services.set('configEditor', {
+    entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
+    edit: async (entry, change) => { persisted = change(persisted, {}) },
+  })
+
+  const off = await callRoute(routes, '/api/memory/generation', { method: 'POST', body: { enabled: false } })
+  assert.equal(off.status, 200, JSON.stringify(off.json))
+  assert.equal(off.json.enabled, false)
+  assert.equal(persisted.generation.enabled, false)
+  // The trigger was already false, so nothing needed correcting.
+  assert.deepEqual(off.json.implied, [])
+
+  // Dream is independent of the pass, and both travel in one request.
+  const dream = await callRoute(routes, '/api/memory/generation', { method: 'POST', body: { dream: true } })
+  assert.equal(dream.status, 200)
+  assert.equal(persisted.generation.dream.enabled, true)
+  assert.equal(persisted.generation.enabled, false, 'the untouched switch keeps its value')
+
+  // Strings are accepted, but only the exact two spellings — never a truthy coercion.
+  const strings = await callRoute(routes, '/api/memory/generation', { method: 'POST', body: { enabled: 'true', dream: 'false' } })
+  assert.equal(strings.status, 200)
+  assert.equal(persisted.generation.enabled, true)
+  assert.equal(persisted.generation.dream.enabled, false)
+})
+
+await test('turning the pass OFF also disables its per-turn trigger, and says so', async () => {
+  // THE rule that would otherwise make the switch look broken: the SDK refuses
+  // `generation.enabled: false` beside `turnComplete.enabled: true`, so a route that only wrote
+  // `enabled: false` would have its write DECLINED and the user would see a switch that does nothing.
+  // The route carries the trigger with it and reports the key it touched.
+  const fs = makeFs({})
+  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, loadConfig({ mode: 'custom' }))
+  let persisted = { mode: 'custom', generation: { turnComplete: { enabled: true, minPromptChars: 1 } } }
+  services.set('configEditor', {
+    entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
+    edit: async (entry, change) => { persisted = change(persisted, {}) },
+  })
+
+  const off = await callRoute(routes, '/api/memory/generation', { method: 'POST', body: { enabled: false } })
+  assert.equal(off.status, 200, 'a switch the SDK would refuse must not be written as-is')
+  assert.equal(persisted.generation.enabled, false)
+  assert.equal(persisted.generation.turnComplete.enabled, false, 'the trigger was carried with it')
+  assert.deepEqual(off.json.implied, ['generation.turnComplete.enabled'], 'and the reply names it')
+  // The rest of the block survives: only `enabled` was carried, not the whole `turnComplete` object.
+  assert.equal(persisted.generation.turnComplete.minPromptChars, 1)
+
+  // Turning it back ON restores the trigger, so "on" really means the pass runs again.
+  const on = await callRoute(routes, '/api/memory/generation', { method: 'POST', body: { enabled: true } })
+  assert.equal(on.status, 200)
+  assert.equal(persisted.generation.turnComplete.enabled, true)
+  assert.deepEqual(on.json.implied, ['generation.turnComplete.enabled'])
+
+  // And the configuration the route persists is one the plugin ACCEPTS — checked the way the Loader
+  // would, because a rejected config stops the plugin activating entirely.
+  apply(makeCtx(makeFs({}), makeLlm('{}')).ctx, loadConfig(persisted))
+})
+
+await test('the generation route never invents a `turnComplete` key that was not there', async () => {
+  // The rule only bites when the trigger is EXPLICITLY true. Asserting it otherwise would add a key the
+  // user never set — and an absent `turnComplete` is not `enabled: true`.
+  const fs = makeFs({})
+  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, loadConfig({ mode: 'custom' }))
+  let persisted = { mode: 'custom' }
+  services.set('configEditor', {
+    entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
+    edit: async (entry, change) => { persisted = change(persisted, {}) },
+  })
+  const off = await callRoute(routes, '/api/memory/generation', { method: 'POST', body: { enabled: false } })
+  assert.equal(off.status, 200)
+  assert.deepEqual(off.json.implied, [])
+  assert.equal('turnComplete' in persisted.generation, false, 'no key the user never wrote')
+})
+
+await test('the generation route refuses a non-boolean instead of coercing it', async () => {
+  const fs = makeFs({})
+  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, loadConfig({ mode: 'custom' }))
+  let edits = 0
+  services.set('configEditor', {
+    entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
+    edit: async (entry, change) => { edits += 1; change({ mode: 'custom' }, {}) },
+  })
+  // A `<select>` may send `"false"`, which is the string most likely to be mistaken for `true`; the
+  // route accepts exactly that spelling, and refuses everything that is merely truthy.
+  for (const body of [{ enabled: 1 }, { enabled: 0 }, { enabled: 'yes' }, { enabled: 'on' }, { enabled: null }, { dream: 1 }, {}]) {
+    const response = await callRoute(routes, '/api/memory/generation', { method: 'POST', body })
+    assert.equal(response.status, 400, `${JSON.stringify(body)} must be refused`)
+  }
+  assert.equal(edits, 0, 'a refused request must never reach the writer')
+})
+
+await test('the status payload publishes both policy switches and which env var pins them', async () => {
+  // The panel needs the values (it cannot import a Host module) and needs to know when a switch would
+  // be a no-op, because `DSH_MEMORY_DREAM` / `DSH_MEMORY_HEADLESS` override the config.
+  //
+  // The env var must be set BEFORE the fixture applies its config: `resolveMemoryConfig` reads the
+  // environment once, at `apply()`, so setting it afterwards changes nothing about the resolved value.
+  const previous = process.env.DSH_MEMORY_DREAM
+  process.env.DSH_MEMORY_DREAM = 'false'
+  try {
+    const pinned = switchFixture({ config: { generation: { dream: { enabled: true } } } })
+    const { json } = await callRoute(pinned.routes, '/api/memory/status')
+    assert.deepEqual(json.envPinned, ['dream'], 'the panel must be told which switch an env var pins')
+    assert.equal(json.dreamEnabled, false, 'and the override wins over the config that says true')
+    assert.equal(json.generationEnabled, true, 'the other switch is unaffected')
+  } finally {
+    if (previous === undefined) delete process.env.DSH_MEMORY_DREAM
+    else process.env.DSH_MEMORY_DREAM = previous
+  }
+
+  // With no override in scope the list is empty and the config value stands.
+  const clean = switchFixture({ config: { generation: { dream: { enabled: true } } } })
+  const { json: free } = await callRoute(clean.routes, '/api/memory/status')
+  assert.deepEqual(free.envPinned, [])
+  assert.equal(free.dreamEnabled, true)
 })
 
 await test('the write-budget route sets both limits, and `0` means no limit', async () => {
