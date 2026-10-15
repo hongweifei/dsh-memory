@@ -20,6 +20,41 @@
 
 ### 新增
 
+**日刊：Qoder 的 Daily Memory Journal（`action: "add"` + `target: "daily"`）**
+
+- `memory_write` 多了 `target: "daily"`：走 Qoder 的日刊工具面，写入 `<root>/journal/<YYYY-MM-DD>.md`。
+  提示词逐字取自 qodercli（`max 8 bullets, each <=120 chars`、候选清单、质量门槛、EXCLUDE、
+  `Write all daily memory items in a single tool call. If nothing qualifies, skip daily memory.`）。
+- **它挂在后台生成 pass 内部，不是交互路径上的新调用**：Qoder 的原文是 "After the memory review above"，
+  所以开启日刊的代价是**一次写入**，不是一次新的模型调用。提示词只在开关为真时才出现这段——教一个工具包会
+  拒绝的调用，就是提示词在许一个插件做不到的承诺。
+- **日期与路径由插件算，模型只给 bullets**：Qoder 的 `chat_id` 是运行时插值的，这里会话本来就在手上，
+  而模型算日期不可靠，所以两者都不经过工具调用。
+- **落在 `journal/` 子目录，是刻意的**：`listRootFiles` 只读根目录平铺一层，所以日刊对注入**不可见**——
+  它是记录，不是每步都要注入的记忆，也因此**不会随天数增长而挤占上下文**（根目录的 `2026-10-15.md`
+  会像普通内容文件一样被注入）。
+- **同一天是追加**：一天会积累多次 pass、多个会话，所以是"读 → 追加 → 写回"，并带着读到的版本做
+  compare-and-swap，两个 pass 同时结束不会互相覆盖（其中一个变 stale 被拒）。`memory_write` 是整份替换，
+  日刊若建在它上面，一天只会留下最后一次 pass。
+- **8 条 / 120 字符只报告、从不拒绝**：Qoder 的 bundle 里对它们只有措辞、没有拒绝路径（同索引的
+  "about 25KB"）。一条 bullet 超长就让日刊停止记录，比稍微啰嗦一点糟得多。
+- **计入每轮写入预算**：它本来就是一次写入；豁免它，预算在开启日刊那一刻就成了谎话。
+- **时区用本地日期**，不是 `toISOString().slice(0,10)`：UTC+8 下后者早上 8 点翻页，会把一晚上的工作
+  记到"明天"。要读这个文件的是人。
+- 面板「生成」一行多了第三个下拉（**日刊**），与另外两个开关**同一个请求、同一个保存**；打开后会说明
+  写到哪个作用域、哪个子目录。`generation.journal` 默认关（照 Qoder），`scope` 默认 `project`。
+  `native` 下与其它 `generation.*` 一样只报告、不给控件。
+
+**顺带修掉一处"截图在撒谎"**：`test/preview.mjs` 的序列化器对 `<select>` 只输出 `data-value`，而浏览器
+显示的是**被 `selected` 的 option**——所以每张已提交的截图里，所有下拉都显示**第一个选项**：`custom` 的
+夹具被画成 `native`，三个开关无论夹具写什么都画成"开"。面板自己早为这件事修过（`<select>` 的值不匹配任何
+option 会静默显示第一个），这次给测试夹具补上同一个修复。
+
+测试 440 → 459（新增 journal 20 项、client 60、integration 181）。12 项反证全部确认会失败：日期改回 UTC、
+日刊落到根目录、停止追加、去掉 compare-and-swap、超长改成拒绝、开关关着仍教日刊、工具包忽略
+`target: "daily"`、豁免写入预算、默认打开、忽略 scope、面板不再说明落点、路由忽略日刊开关。
+截图已重生成并看过（生成行显示「自动记录 开 / 记忆巩固 开 / 日刊 关」，模式显示 `custom`）。
+
 **两个策略开关（`auto_memory_policy` / `auto_dream`）可在设置面板里改**
 
 - 面板「状态」区新增**生成**一行：**自动记录**（`generation.enabled` = Qoder 的
@@ -346,7 +381,7 @@ false: 0 | false | no  | off              // 其他值一律当"未设置"
 |---|---|
 | **AGENTS.md 层** | Qoder 的 `globalMemory`/`pluginMemory`/`projectMemory`/`localMemory` 四个桶的原料是 `getAllQoderMdFilenames()`，即**指令文件族**；在 DSH 由 `dsh-agent-instructions` 负责（项目 `AGENTS.md`/`CLAUDE.md`、`.local` 变体、`$DSH_HOME/AGENTS.md`）。照搬会**同一份文件每次请求注入两遍**。 |
 | **skills 记忆目录** | 技能是 harness 的一等子系统（`ctx.skills`）；Qoder 的 `getProjectSkillsMemoryDir()` 在整个 bundle 里**只有定义、没有调用点**。 |
-| **daily journal** | QoderWork 桌面版的工具面（`action: "add", target: "daily"`），不是 SDK 记忆契约。 |
+| ~~**daily journal**~~ | **2026-10-15 已实现**（见上方新增条目）。原先不做的理由是"那是 QoderWork 桌面版的工具面，不是 SDK 记忆契约"；用户要求做，于是按 bundle 里逐字解出的提示词与 `action:"add" target:"daily"` 工具面实现。 |
 | **旧数据迁移** | 不做任何兼容层：旧目录不读也不删，要留内容就手工复制。 |
 | `usage`/`credits`/`requester: 'sdk'` | 辅助调用不回报计费。 |
 | `origin: 'main_session'` | 命名差异：轮内 pass 报 `turn_complete` + `midTurn: true`。 |

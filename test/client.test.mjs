@@ -233,6 +233,10 @@ const STATUS = {
   // Which of the two policy switches an environment variable overrides. Empty here, so both are
   // editable. The real route always sends an array.
   envPinned: [],
+  // The daily journal: off, filed into the project scope. The real route always sends all three.
+  journalEnabled: false,
+  journalScope: 'project',
+  journalDir: 'journal',
   // The session's own mode, which the panel reports read-only (the control is in the composer).
   memoryMode: 'auto',
   lastGeneration: { status: 'saved', turnIndex: 3, writtenFiles: [], failedFiles: [] },
@@ -602,6 +606,33 @@ await test('the panel offers the two policy switches, and reports an env-pinned 
   assert.doesNotMatch(native.json, /dshmem-policy-dream/, 'and no dead dream toggle either')
   assert.match(native.text, /Generation\n<span>on/, 'the value is still reported')
   assert.match(native.text, /Consolidation\n<span>on/, 'both switches are reported')
+})
+
+await test('the panel offers the daily-journal switch, and says where entries land', async () => {
+  // Qoder's `action: "add"`, `target: "daily"`. It is a third toggle in the same row and the same
+  // write — three halves of one decision, so one Save cannot leave two of them behind.
+  const { text, json } = await renderWithStatus(STATUS)
+  assert.match(text, /Daily journal/, 'the switch is labelled')
+  assert.match(json, /dshmem-policy-journal/, 'the toggle renders')
+  assert.match(text, /automatic pass, consolidation, and the daily journal/, 'the hint covers all three')
+  // With the journal OFF there is nothing to explain about where it would go.
+  assert.doesNotMatch(text, /Journal entries go to/)
+
+  // ON: the panel says which scope and which subdirectory, because "on" without knowing WHERE leaves
+  // somebody hunting for the file.
+  const on = await renderWithStatus({ ...STATUS, journalEnabled: true, journalScope: 'project' })
+  assert.match(on.text, /Journal entries go to the project scope/)
+  assert.match(on.text, /journal\/ subdirectory/)
+  assert.match(on.text, /never injected into the context/)
+  const user = await renderWithStatus({ ...STATUS, journalEnabled: true, journalScope: 'user' })
+  assert.match(user.text, /Journal entries go to the user scope/)
+})
+
+await test('the panel reports the journal read-only where the plugin would refuse the write', async () => {
+  // `generation.*` is refused under `native`, so the whole row degrades — journal included.
+  const native = await renderWithStatus({ ...STATUS, consumptionWritable: false, journalEnabled: true })
+  assert.doesNotMatch(native.json, /dshmem-policy-journal/, 'no dead control under native')
+  assert.match(native.text, /Daily journal\n<span>on/, 'the value is still reported')
 })
 
 await test('the panel offers the MODE, which is the way back in from a locked cap', async () => {

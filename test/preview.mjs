@@ -32,6 +32,10 @@ const STATUS = {
   // The consolidation switch, which the panel now renders as an EDITABLE toggle. A fixture that omitted
   // it would render the toggle from `undefined` — the "fixture lies" trap this file already documents.
   dreamEnabled: true,
+  // The daily journal, off: the panel shows the switch and — only when it is on — where entries land.
+  journalEnabled: false,
+  journalScope: 'project',
+  journalDir: 'journal',
   consumptionEnabled: true,
   maxTokens: 2000,
   // The legal floor for the cap, which the panel puts on its input's `min`.
@@ -250,11 +254,11 @@ renderer.unmount()
  * styles itself through prefixed classes, so a serializer that only carried
  * inline `style` would produce an unstyled preview that looks like a CSS bug.
  */
-function toHtml(node) {
+function toHtml(node, selectValue) {
   if (node === null || node === undefined) return ''
   if (typeof node === 'string') return escapeHtml(node)
   if (typeof node === 'number') return String(node)
-  if (Array.isArray(node)) return node.map(toHtml).join('')
+  if (Array.isArray(node)) return node.map((child) => toHtml(child, selectValue)).join('')
   const tag = node.type
   const props = node.props ?? {}
   const attrs = []
@@ -279,6 +283,12 @@ function toHtml(node) {
   if (tag === 'input' && props.value !== undefined) attrs.push(`value="${escapeHtml(String(props.value))}"`)
   if (tag === 'input' && props.min !== undefined) attrs.push(`min="${escapeHtml(String(props.min))}"`)
   if (tag === 'select' && props.value !== undefined) attrs.push(`data-value="${escapeHtml(String(props.value))}"`)
+  // A `<select>`'s displayed value comes from its `selected` OPTION, not from the select's own
+  // `value` prop — which is React state the browser never sees. Emitting only `data-value` made every
+  // committed screenshot show the FIRST option of every dropdown: the mode select documented `native`
+  // for a `custom` fixture, and all three policy toggles rendered as 开 whatever the fixture said.
+  // That is the same failure the panel itself was fixed for, so the harness gets the same fix.
+  if (tag === 'option' && selectValue !== undefined && props.value === selectValue) attrs.push('selected')
   if (tag === 'textarea') attrs.push('rows="8"')
   const style = props.style
   if (style) {
@@ -288,7 +298,8 @@ function toHtml(node) {
         .join(';')}"`,
     )
   }
-  return `<${tag}${attrs.length > 0 ? ` ${attrs.join(' ')}` : ''}>${(node.children ?? []).map(toHtml).join('')}</${tag}>`
+  const inner = tag === 'select' ? props.value : selectValue
+  return `<${tag}${attrs.length > 0 ? ` ${attrs.join(' ')}` : ''}>${(node.children ?? []).map((child) => toHtml(child, inner)).join('')}</${tag}>`
 }
 
 const escapeHtml = (text) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')

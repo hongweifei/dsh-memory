@@ -146,21 +146,31 @@ readdir(dir).filter(n => n.endsWith('.md') && n !== 'MEMORY.md' && !n.startsWith
 
 跨项目通用的 `feedback`/`reference` 才放 user 作用域；只属于当前项目的放 project 作用域。
 
-## 另有两个流程（v1 未实现）
+## 日刊（已实现，2026-10-15）
 
 - **Daily Memory Journal**：会话结束后追加当日条目。工具调用形如
   `action:"add", target:"daily", chat_id, content`，内容是项目符号列表，
   **最多 8 条、每条 ≤120 字符**。排除已在 `MEMORY.md`/`USER.md`/`AGENTS.md` 里的信息。
+  完整提示词（逐字解出，含候选清单、质量门槛与 EXCLUDE）见 README §24。
+
+  本插件的实现与原文的两处差异，都是刻意的：
+
+  - **`chat_id` 不收**。Qoder 的提示词里它是运行时插值的（框架给身份，模型原样回抄）；这里会话本来就在
+    手上，让模型回抄一个身份只会给它一个能写错的参数。
+  - **存储位置在 bundle 里查不到**。字符串表里没有日刊的路径，JS 里搜到的 `journal.jsonl` 属于 workflow
+    而非日刊（`aue(...)/snapshot.json` 旁边那个），所以**没有可对齐的位置**：本插件选
+    `<root>/journal/<YYYY-MM-DD>.md`，落在 `listRootFiles` 不读的子目录里，因此对注入不可见。
+
 - **Dream（记忆巩固）**：`origin: 'dream'`——这正是 SDK 类型里那个我原以为不可达的来源。
   提示词开头是 `# Dream: Memory Consolidation`，分阶段（Orient → 读取 → Consolidate），
   按「距上次巩固的小时数」调度，配置项形如 `auto-memory consolidation`（`minHoursBetweenRuns`）。
 
-## 对 v1 的结论
+## 对 v1 的结论（当时的缺口，现已全部补上）
 
 v1 缺的不是「两个作用域」——那两个我有了——而是：
 
 1. 项目记忆的位置错了：我放在 `<projectRoot>/.dsh/memory`，Qoder 放在 `<configDir>/projects/<id>/memory`；
 2. **索引/内容分离**：我把 `MEMORY.md` 同时当索引和唯一写入目标，没有内容文件模型；
 3. **四种记忆类型**（front-matter `type`）完全缺失；
-4. Daily journal；
-5. Dream 巩固流程（`origin: 'dream'`）。
+4. Daily journal —— **2026-10-15 实现**（见上，README §24）；
+5. Dream 巩固流程（`origin: 'dream'`）—— 已实现。

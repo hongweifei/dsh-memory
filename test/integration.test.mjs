@@ -170,6 +170,30 @@ function makeLlm(plan, options = {}) {
   }
 }
 
+/** A scripted model whose responses may carry tool calls — the shape the memory agent loop drives.
+ * Needed here so a REAL pass can be observed calling `memory_write` with `target: "daily"`. */
+function makeScriptedLlm(script) {
+  const calls = []
+  return {
+    calls,
+    stream(options_) {
+      calls.push(options_)
+      const step = calls.length <= script.length ? script[calls.length - 1] : { text: '' }
+      return (async function* () {
+        let index = 0
+        for (const call of step.calls ?? []) {
+          yield { type: 'tool-call-delta', index, id: call.id, name: call.name, argumentsDelta: call.arguments }
+          yield { type: 'block-end', index, block: { type: 'tool-call', id: call.id, name: call.name, arguments: call.arguments } }
+          index += 1
+        }
+        if (step.text !== undefined) yield { type: 'block-end', index, block: { type: 'text', text: step.text } }
+        const kind = step.finish ?? ((step.calls ?? []).length > 0 ? 'tool-calls' : 'stop')
+        yield { type: 'finish', reason: { kind } }
+      })()
+    },
+  }
+}
+
 /** Session double exposing the surface/event/header contract the plugin reads. */
 function makeSession(events, cwd) {
   return {
@@ -496,6 +520,86 @@ const turnEvents = (prompt, response) => [
   { type: 'assistant/message', seq: 3, time: 3, data: { message: { content: [{ type: 'text', text: response }] } } },
   { type: 'turn/end', seq: 4, time: 4, data: { turn: 1, reason: { kind: 'completed' } } },
 ]
+
+await test('a real generation pass files a daily journal entry through the tool', async () => {
+  // The whole path, end to end: turn ends → background pass → the model calls `memory_write` with
+  // `target: "daily"` → the entry lands in `journal/<today>.md`. The unit suite covers the writer; this
+  // covers the fact that the PROMPT teaches the call and the TOOLKIT accepts it, which is where a port
+  // of this shape actually breaks — a prompt that names a call the toolkit refuses is a silent no-op.
+  const fs = makeFs({})
+  const llm = makeScriptedLlm([
+    {
+      calls: [{
+        id: 'c1',
+        name: 'memory_write',
+        arguments: JSON.stringify({
+          target: 'daily',
+          content: '- Set up pnpm for the project\n- Chose the project scope for the journal',
+        }),
+      }],
+    },
+    { text: 'recorded the day' },
+  ])
+  const { ctx, listeners, services } = makeCtx(fs, llm)
+  let reported
+  apply(
+    ctx,
+    loadConfig({
+      mode: 'custom',
+      userScope: false,
+      projectScope: true,
+      generation: {
+        turnComplete: { minPromptChars: 1 },
+        journal: { enabled: true, scope: 'project' },
+        onResult: (result) => (reported = result),
+      },
+    }),
+  )
+  const session = makeSession(turnEvents('set up the project and note what we decided', 'done'), 'C:\\proj')
+  const agent = makeAgent(session)
+  listeners.get('agent/created')[0]({ agent })
+  listeners.get('session/event')[0](session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+  await services.get('memory').flushMemory()
+
+  assert.equal(reported.status, 'saved', JSON.stringify(reported))
+  const written = reported.writtenFiles.filter((file) => file.journal === true)
+  assert.equal(written.length, 1, 'the journal entry is reported as such')
+  assert.match(written[0].path, /^journal\/\d{4}-\d{2}-\d{2}\.md$/)
+
+  const entry = [...fs.files.entries()].find(([key]) => key.includes('journal'))
+  assert.ok(entry, 'the file exists on disk')
+  assert.match(entry[1], /Set up pnpm for the project/)
+  assert.match(entry[1], /^# \d{4}-\d{2}-\d{2}/, 'the day heading is written by the plugin')
+
+  // And the pass that wrote it was TOLD to, by the prompt it was actually given. The memory agent
+  // passes the instruction as the request's top-level `system`, not as a system message.
+  assert.match(llm.calls[0].system, /Daily Memory Journal/, 'the prompt carried the journal section')
+})
+
+await test('a real generation pass does not journal while the switch is off', async () => {
+  // The negative control for the test above: without the switch the prompt has no journal section, so
+  // the same scripted tool call is not something the model would have been asked to make — and if it
+  // made it anyway the toolkit would still file it, which is why the PROMPT is what is asserted here.
+  const fs = makeFs({})
+  const offLlm = makeScriptedLlm([{ text: 'nothing to record' }])
+  const { ctx, listeners, services } = makeCtx(fs, offLlm)
+  apply(
+    ctx,
+    loadConfig({
+      mode: 'custom',
+      userScope: false,
+      projectScope: true,
+      generation: { turnComplete: { minPromptChars: 1 }, onResult: () => {} },
+    }),
+  )
+  const session = makeSession(turnEvents('a short prompt that still clears the gate', 'done'), 'C:\\proj')
+  listeners.get('agent/created')[0]({ agent: makeAgent(session) })
+  listeners.get('session/event')[0](session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+  await services.get('memory').flushMemory()
+
+  assert.doesNotMatch(offLlm.calls[0].system, /Daily Memory Journal/)
+  assert.equal([...fs.files.keys()].some((key) => key.includes('journal')), false)
+})
 
 await test('generation writes a plan and reports status saved with writtenFiles', async () => {
   const fs = makeFs({})
@@ -4355,6 +4459,43 @@ await test('the status payload publishes the write budget, so the panel can show
   const published = await callRoute(configured.routes, '/api/memory/status')
   assert.equal(published.json.maxWrites, 7)
   assert.equal(published.json.maxWriteBytes, 4096)
+})
+
+await test('the generation route carries the daily-journal switch with the other two', async () => {
+  // Qoder's journal is a `generation.*` key, so it travels in the same request as the two policy
+  // switches: one Save, three halves of one decision.
+  const fs = makeFs({})
+  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, loadConfig({ mode: 'custom', generation: { turnComplete: { enabled: false } } }))
+  let persisted = { mode: 'custom', generation: { turnComplete: { enabled: false } } }
+  services.set('configEditor', {
+    entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
+    edit: async (entry, change) => { persisted = change(persisted, {}) },
+  })
+
+  const on = await callRoute(routes, '/api/memory/generation', { method: 'POST', body: { journal: true } })
+  assert.equal(on.status, 200, JSON.stringify(on.json))
+  assert.equal(persisted.generation.journal.enabled, true)
+  // Flipping the journal leaves the other two switches alone.
+  assert.equal(persisted.generation.enabled, undefined, 'the pass switch is not touched')
+  assert.equal(persisted.generation.turnComplete.enabled, false)
+
+  // The status payload publishes it, with the scope and directory the panel needs. Read from a
+  // SEPARATELY applied config: `/status` reports the configuration the plugin resolved at `apply()`,
+  // and the `configEditor` fake above only records what a write WOULD persist (nothing re-applies it).
+  const published = switchFixture({ config: { generation: { journal: { enabled: true, scope: 'user' } } } })
+  const { json } = await callRoute(published.routes, '/api/memory/status')
+  assert.equal(json.journalEnabled, true)
+  assert.equal(json.journalScope, 'user')
+  assert.equal(json.journalDir, 'journal')
+
+  const off = await callRoute(routes, '/api/memory/generation', { method: 'POST', body: { journal: 'false' } })
+  assert.equal(off.status, 200)
+  assert.equal(persisted.generation.journal.enabled, false, 'the string form is narrowed, not coerced')
+
+  // A non-boolean is refused like the other two switches.
+  const bad = await callRoute(routes, '/api/memory/generation', { method: 'POST', body: { journal: 1 } })
+  assert.equal(bad.status, 400)
 })
 
 await test('the generation route flips the two Qoder policy switches', async () => {

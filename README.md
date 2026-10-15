@@ -94,6 +94,9 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
       pauseAfterFailures: 3   # 连续失败几次就暂停本会话的生成（Qoder 的 hFl=3）；0＝永不暂停
       maxWrites: 0            # 单轮最多写几个文件（索引也算一个）；0＝不设上限（默认，面板可改）
       maxWriteBytes: 0        # 单文件字节上限；0＝不设上限（默认，面板可改）
+      journal:                # Qoder 的日刊（action:"add", target:"daily"）；默认关
+        enabled: false
+        scope: project        # 日刊写到哪个作用域：project | user
       provider: ''            # 留空则用会话自身模型路由
       model: ''
       prompt: ''              # 附加记录策略
@@ -297,9 +300,9 @@ pass 的那套是它自己的闭环，改动它会牵动生成提示词与预算
 **注入预算区**（注入上限**可直接编辑**，见 §21）· **注入预览** · 活动区（最近生成/巩固 + 告警）·
 编辑器（作用域下拉 + 文件名 + 保存/重载/等待）· 命令提示。中英双语，全部用真实 `--dsw-*` 主题 token。
 
-**面板里能改的五项**：**模式**（`native`/`custom`，§3）、**全局作用域**（§20）、**注入上限**（§21）、
-**写入预算**（§22，每轮文件数 + 单文件字节）和**两个策略开关**（§23，自动记录 + 记忆巩固）。五项共用
-同一个写入器与同一套规则。除了全局作用域和模式，其余三项都是 `generation.*` / `consumption.*`，
+**面板里能改的六项**：**模式**（`native`/`custom`，§3）、**全局作用域**（§20）、**注入上限**（§21）、
+**写入预算**（§22，每轮文件数 + 单文件字节）和**三个策略开关**（§23，自动记录 + 记忆巩固 + 日刊）。
+六项共用同一个写入器与同一套规则。除了全局作用域和模式，其余四项都是 `generation.*` / `consumption.*`，
 **在 `native` 下会被拒绝**，所以面板在 `native` 下对它们只报告值、不给控件。
 三项都是"改了再点保存"，共用同一个写入器和同一套规则。模式排在最前，因为它决定另外两项**存不存在**——
 `native` 下注入上限就是只读的；有了这一项，"native 用户要改上限"不再需要手改 YAML 再重启。
@@ -565,7 +568,7 @@ harness 的 `fs` 服务**确实没有 delete**（`FileSystem` 抽象类只有 `r
 
 只许向下、无环，且**只有 `index.js`** 可以引用 presentation 层——`test/architecture.test.mjs` 强制。
 体积：host 模块逻辑 ≤500 行；`index.js` ≤300；`client.js` ≤640 逻辑 **且** ≤220 行内联数据
-（两份词典 + 样式表）。**当前 `client.js` 逻辑 810/830、内联数据 209/260。**
+（两份词典 + 样式表）。**当前 `client.js` 逻辑 825/830、内联数据 216/260。**
 
 客户端那条线是**防漂移**，不是必须凑合的额度：它拦的是面板悄悄膨胀一倍，不是"要加功能就先删点东西"。
 上一版它卡在 560/560，加全局作用域开关时我据此动过压缩和"少显示一点"的念头——用户的裁定是
@@ -613,7 +616,7 @@ node test/harness-env.mjs         # 不是测试：定位 harness 与安装位�
 |---|---|
 | **AGENTS.md 层** | Qoder 的 `globalMemory`/`projectMemory`/`localMemory`/`pluginMemory` 四个桶的原料是 `getAllQoderMdFilenames()`，即**指令文件族**；在 DSH 那由 `dsh-agent-instructions` 负责。照搬会**同一份文件每次请求注入两遍**。 |
 | **skills 记忆目录** | 技能是 harness 的一等子系统（`ctx.skills`）；Qoder 的 `getProjectSkillsMemoryDir()` 在整个 bundle 里**只有定义、没有调用点**，没有行为可对齐。 |
-| **daily journal** | QoderWork 桌面版的工具面（`action: "add", target: "daily"`），不是 SDK 记忆契约。 |
+| ~~**daily journal**~~ | **2026-10-15 已实现**（§24）。原先不做的理由是"那是 QoderWork 桌面版的工具面，不是 SDK 记忆契约"——这条理由**仍然成立**，但用户明确要求做，所以按 bundle 里逐字解出的提示词与 `action:"add" target:"daily"` 工具面实现，并把存储位置（bundle 里查不到）当作本插件自己的选择记下来。 |
 | **旧数据迁移** | 明确决定：不做任何兼容层。改身份前的旧目录既不读也不删；要留内容就**手工复制**过去（一次性操作，不是插件逻辑）。 |
 | `usage` / `credits` / `requester: 'sdk'` | 辅助调用不回报计费。 |
 | `origin: 'main_session'` | 命名差异：轮内 pass 报 `turn_complete` + `midTurn: true`。 |
@@ -622,7 +625,7 @@ node test/harness-env.mjs         # 不是测试：定位 harness 与安装位�
 
 - **两处提示词片段解不出**（见 §14），已就地声明而不是编造。
 - **索引约束只报告不阻止**：写入时检查"约 25KB"与"单行超过约 200 字符"会写进结果、日志与面板，但**不拒绝**——原实现也只在提示词里说。
-- **面板可编辑项只有五项**（§3、§20、§21、§22、§23）：模式、全局作用域、注入上限、写入预算与两个策略开关。其余配置直接改插件配置或用命令；
+- **面板可编辑项只有六项**（§3、§20、§21、§22、§23）：模式、全局作用域、注入上限、写入预算与三个策略开关。其余配置直接改插件配置或用命令；
   这是刻意的取舍（29 项全量表单做过又删了）。
 - **删除的沙箱代价**（§13）：只读后端是主动拒绝，而不是被后端强制拦截。
 - **`projectKey` 有损**（§7）：`D:\a-b` 与 `D:\a\b` 共用一个记忆目录——这是 harness 自己的取舍，本插件继承它。
@@ -787,7 +790,7 @@ reconcile）。没有它（headless 组合）时 `/memory-scope` 会**说明**�
 
 ## 21. 在面板里改注入上限（`POST /api/memory/budget`、`/memory-budget`）
 
-**面板里能改的五项之一**（另外四项是 §3 的模式、§20 的全局作用域、§22 的写入预算和 §23 的两个策略开关），也是最常需要调的那一个：上下文紧张就调小，
+**面板里能改的六项之一**（另外五项是 §3 的模式、§20 的全局作用域、§22 的写入预算和 §23 的三个策略开关），也是最常需要调的那一个：上下文紧张就调小，
 记忆总被截断就调大。面板的「注入预算」区里它是一个数字输入框 + 保存按钮（不是"每敲一下就存"——那样在输入
 `1500` 的过程中会先把 `1` 写进去），旁边写着当前值和这条提示：
 
@@ -819,8 +822,8 @@ reconcile）。没有它（headless 组合）时 `/memory-scope` 会**说明**�
 不具备写配置的能力。两者混用等于把调用者的错和自己的部署差异算成同一件事。
 
 **为什么不做成一整页可编辑设置**：试过，29 项，然后删掉了——一个把插件每个旋钮都摊开的面板，比一个
-把最常改的那一项做好的面板更难用。现在面板里可编辑的只有**五项**：模式（§3）、全局作用域（§20）、
-注入上限（§21）、写入预算（§22）和两个策略开关（§23）。要改别的仍然可以直接改插件配置或问 `/memory`。
+把最常改的那一项做好的面板更难用。现在面板里可编辑的只有**六项**：模式（§3）、全局作用域（§20）、
+注入上限（§21）、写入预算（§22）和三个策略开关（§23）。要改别的仍然可以直接改插件配置或问 `/memory`。
 
 **`/memory-budget` 命令**做同样的事（`/memory-budget 1500`、`/memory-budget status`），并且复用同一个
 写入器，所以命令和面板不可能给出不同的规则。
@@ -830,16 +833,17 @@ reconcile）。没有它（headless 组合）时 `/memory-scope` 会**说明**�
 加第二项时扩成 `config-route.js`）。五者共用同一个 `writeConfig`，所以"什么算可写"只有一个答案：
 `refused` → 400，`unwritable` → 501。
 
-## 23. 在面板里改两个策略开关（`POST /api/memory/generation`）
+## 23. 在面板里改三个策略开关（`POST /api/memory/generation`）
 
-面板「状态」区的**生成**一行，两个下拉（**自动记录** / **记忆巩固**）+ 一个保存按钮：
+面板「状态」区的**生成**一行，三个下拉（**自动记录** / **记忆巩固** / **日刊**）+ 一个保存按钮：
 
 | 面板 | 配置 | Qoder 对应 |
 |---|---|---|
 | 自动记录 | `generation.enabled` | `auto_memory_policy.enabled` |
 | 记忆巩固 | `generation.dream.enabled` | `auto_dream.enabled` |
+| 日刊 | `generation.journal.enabled` | Daily Memory Journal |
 
-**默认值照 Qoder，但方向相反的是"自动记录"**：Qoder 两个开关**默认都是 `false`**（自动记忆在那边是要显式打开的功能）；本插件是**装来用的插件**，所以 `generation.enabled` 默认 `true`，而 `dream.enabled` 照 Qoder 默认 `false`（它每次多花一次模型调用）。这条差异是**刻意的**，不是没对齐。
+**默认值照 Qoder，但方向相反的是"自动记录"**：Qoder 三个开关**默认都是关的**（自动记忆在那边是要显式打开的功能）；本插件是**装来用的插件**，所以 `generation.enabled` 默认 `true`，而 `dream.enabled` / `journal.enabled` 照 Qoder 默认 `false`（各自都要多花一次调用或一次写入）。这条差异是**刻意的**，不是没对齐。
 
 **关掉「自动记录」必须连带关掉它的「每轮触发」**，因为 SDK 拒绝 `generation.enabled: false` 旁边
 `turnComplete.enabled: true`。只写 `enabled: false` 会让这次写入**被拒**，用户看到的就是一个按了没反应的开关。
@@ -878,5 +882,49 @@ reconcile）。没有它（headless 组合）时 `/memory-scope` 会**说明**�
 词表。二者都是**叶子模块**（不 import 任何东西），所以 loader 路径、写入路径、路由和面板读的是同一份，
 不存在"第二份规则慢慢和第一份漂开"。`config-write.js` 排在 schema **之上**是有意的：它必须能问
 `apply()` 问的那个问题，所以它用的是真正的 `Config`，不是手搓的近似。
+
+## 24. 日刊（Qoder 的 Daily Memory Journal）
+
+Qoder 的工具面是 `memory` 工具加 `action: "add"` + `target: "daily"` + `chat_id`。逐字解出来的契约：
+
+> **Daily Memory Journal**: After the memory review above, write a daily memory entry if this
+> conversation produced information useful beyond this session.
+>
+> - content: Bullet-point list, max 8 bullets, each <=120 chars
+> - 候选：做成了什么 / 决定了什么及为什么（含被否的方案）/ 遇到的问题及怎么解的 / 重要的文件 API 配置 / 影响方向的用户反馈
+> - Quality gates: 每条自含；每条具体，尽量带名字、路径或具体值
+> - EXCLUDE: 已在 `MEMORY.md` 里的、`<system-reminder>` 内容、琐碎动作、没解决的原始报错
+>
+> Write all daily memory items in a single tool call. If nothing qualifies, skip daily memory.
+
+**"After the memory review above" 决定了它挂在哪**：日刊**不是**交互路径上的第四次调用，而是**后台生成 pass
+内部**多写一个文件——pass 本来就在跑，所以开启日刊的代价是**一次写入**，不是一次新的模型调用。提示词只在
+`journal.enabled` 为真时才出现（教一个工具包会拒绝的调用，就是提示词在许一个插件做不到的承诺）。
+
+**日期和路径由插件算，模型不算。** Qoder 的提示词里 `chat_id: ` 是运行时插值的（框架给身份，模型原样回抄）。
+这里会话本来就在手上，**模型算日期是出了名的不靠谱**，所以两者都不经过工具调用：模型只给 bullets。
+
+**文件落在 `<root>/journal/<YYYY-MM-DD>.md`，即子目录里，而且这是刻意的。**
+`listRootFiles` 只读根目录的**平铺**一层，所以嵌套文件对注入**不可见**：日刊是"那天发生了什么"的记录，
+不是每一步都要塞进上下文的记忆。这也意味着**日刊不会随天数增长而挤占上下文**——写在根目录的
+`2026-10-15.md` 会像普通内容文件一样被注入，一个月的日刊足以挤掉它本该补充的记忆。
+
+**代价要说清楚**：`memory` 工具的 `list` / `read` / `search` **同样看不到日刊**，因为三者都走
+`listRootFiles`。这是刻意的取舍，不是遗漏——日刊是给人看的日志，不是给模型检索的记忆；要读它就直接打开
+`<root>/journal/<日期>.md`。若哪天真要让模型检索日刊，正确的做法是给搜索加一个显式的"含子目录"开关，
+而不是把日刊挪回根目录（那会重新引入注入膨胀）。
+
+**同一天是追加，不是替换。** 一天会积累多次 pass、多个会话，所以文件是"读 → 追加 → 写回"。`memory_write`
+是整份替换，若日刊建在它上面，一天只会留下最后一次 pass。写入还**带着读到的版本**做 compare-and-swap，
+所以两个 pass 同时结束也不会互相覆盖，而是让其中一个变成 stale 被拒。
+
+**两个数字只是提示词里的措辞，不是闸门。** Qoder 的 bundle 里对它们**只有措辞、没有拒绝路径**（和索引的
+"about 25KB" 同一种），所以这里也只**报告**、从不拒绝：一条 bullet 超长就让日刊停止记录，比稍微啰嗦一点糟得多。
+
+**日刊计入每轮写入预算**（`generation.maxWrites`）——它本来就是一次写入。把它豁免掉，预算在开启日刊的那一刻
+就成了谎话。
+
+**时区用本地日期**，不是 `toISOString().slice(0,10)`：在 UTC+8 后者会在早上 8 点翻页，把一晚上的工作记到
+"明天"。要读这个文件的是人，不是 UTC。
 
 
