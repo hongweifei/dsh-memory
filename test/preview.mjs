@@ -38,6 +38,10 @@ const STATUS = {
   failureMode: 'best_effort',
   maxOutputTokens: 0,
   pauseAfterFailures: 3,
+  // The write budget, as the Host reports it. `0` = NO LIMIT and is the default for both, so the
+  // fixture uses values that exercise the editable control without looking like a cap nobody set.
+  maxWrites: 0,
+  maxWriteBytes: 0,
   writePolicy: 'memory-root',
   sandboxMode: 'workspace-write',
   gate: { kind: 'custom', timeoutMs: 10000, onGateError: 'skip' },

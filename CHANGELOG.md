@@ -20,6 +20,25 @@
 
 ### 新增
 
+**写入预算默认改为不设上限，并可在设置面板里改**
+
+- **`generation.maxWrites` 与 `maxWriteBytes` 的默认值改为 `0`＝不设上限**（原为 4 / 16384）。
+  理由：**Qoder 的 SDK 与 qodercli 都没有这两个字段**（`SerializableMemoryGenerationOptions` 只有
+  enabled/roots/prompt/turnComplete，bundle 里也搜不到），所以**没有可对齐的默认值**——预设一个 Qoder
+  根本不存在的上限不是"对齐"，是自造约束。要限就自己设。
+- **`0` 的语义收进一处判断**：新增 `isBudgetEnforced(limit)`（`constants.js`），**四个写入点全部读它**——
+  `memory` 工具的 `write` 与 `edit`、后台 pass、面板保存路由。这一点必须集中：`0` 若被当成"上限就是
+  0 字节"，**每一次写入都会被拒**，而这正是改默认值时最容易踩的坑（那四个点原本都是裸的
+  `bytes > maxWriteBytes`，全部会误判）。测试盯着四处，反证去掉任一处集成立刻红。
+- **面板可改**（`POST /api/memory/write-budget`，§22）：两个数字框（每轮文件数 / 单文件字节）**共用一个
+  保存按钮**——它们是同一件事的两半，分两个按钮会出现"改了一个、另一个没存"的中间态。控件把 `0` 显示成
+  **「不设上限」**而不是裸的 0：数字标签下面写着 `0` 读起来像是限制得最死，而它其实是最松的。
+  `/status` 随 payload 下发这两个值（面板拿不到 Host 模块）。
+- **`generation.*` 在 `native` 下被拒绝**，与注入上限同一条铁律，所以那个模式下面板只报告值、不给控件
+  ——写进去的配置插件自己不接受，而**被拒绝的配置会让插件不激活**（§3）。校验只有一条：非负整数，
+  **`0` 合法**（注入上限那边的 floor 是 `1`，因为两处的 `0` 含义完全不同）。
+- 提示词只在预算真正生效时讲它：不设上限时那一段**根本不出现**，模型也就不会被教一个不存在的约束。
+
 **`memory` 工具多了 `edit`：改一段，而不是整份重写**
 
 - **`action: 'edit'`**（`old_string` / `new_string` / `replace_all`）。此前只有 `write`，语义是**整份替换**：
@@ -240,7 +259,8 @@
   `memory-root` 与受限会话并存时再补一段「· session <会话模式>」——两个数字分开显示，才不会把"完全
   权限的会话"看成"被围栏的会话"；`/memory` 打同一组事实并在只读时明说原因。
 - **单轮写入预算不再伪装成失败**（用户报告的 `写入被拒 status.md：at most 4 files may be written per
-  pass`）。`generation.maxWrites`（默认 **4**）是本插件自己的防跑飞上限——Qoder 的 SDK 与 qodercli
+  pass`）。`generation.maxWrites`（当时默认 **4**；**本版已改为 0＝不设上限**，见上）是本插件自己的
+  防跑飞上限——Qoder 的 SDK 与 qodercli
   **都没有这个字段**（`SerializableMemoryGenerationOptions` 只有 enabled/roots/prompt/turnComplete，
   bundle 里也搜不到 maxWrites）——但第一版**既没在提示里写明它，又把撞线记成 failed**，于是"一轮写了
   4 个、第 5 个被拦"在面板上变成 `写入被拒 <文件>：…`，一轮已经干完的 pass 看起来是坏的。现在两半都

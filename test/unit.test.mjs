@@ -151,7 +151,18 @@ test('resolveMemoryConfig keeps explicit values over defaults', () => {
   )
   assert.equal(resolved.generation.prompt, 'only deploys')
   assert.equal(resolved.consumption.maxTokens, 500)
+  // Both write budgets default to 0 = NO LIMIT. Neither field exists in Qoder (nor in the SDK), so a
+  // self-imposed cap is one this port should not invent — and it is a free choice either way.
+  assert.equal(resolved.generation.maxWrites, 0)
+  assert.equal(resolved.generation.maxWriteBytes, 0)
+})
+
+test('an explicit write budget still wins over the unlimited default', () => {
+  // The default is permissive, so the test that matters is that a configured value is HONOURED —
+  // otherwise "defaults to no limit" could quietly become "always no limit".
+  const resolved = resolveMemoryConfig(accepted({ mode: 'custom', generation: { maxWrites: 4, maxWriteBytes: 16384 } }))
   assert.equal(resolved.generation.maxWrites, 4)
+  assert.equal(resolved.generation.maxWriteBytes, 16384)
 })
 
 test('mode rejects an unknown value', () => {

@@ -225,7 +225,11 @@ const STATUS = {
   // The plugin modes a control may offer, and whether the cap is writable here. Both are Host facts:
   // `consumptionWritable` is false in `native`, where the SDK refuses every consumption override.
   modeChoices: ['native', 'custom'],
-  consumptionWritable: true,
+  // The WRITE budget as the Host reports it: `0` = no limit, which is the default for both. A fixture
+  // that omitted these rendered "undefined" and read like a product bug — the trap this file's other
+  // comment warns about, so they are stated rather than left out.
+  maxWrites: 0,
+  maxWriteBytes: 0,
   // The session's own mode, which the panel reports read-only (the control is in the composer).
   memoryMode: 'auto',
   lastGeneration: { status: 'saved', turnIndex: 3, writtenFiles: [], failedFiles: [] },
@@ -540,6 +544,35 @@ await test('the injected block WRAPS instead of clipping long lines', async () =
   const { text } = await renderWithStatus(STATUS)
   assert.match(text, /\.dshmem-pre\{[^}]*white-space:pre-wrap/, 'the block must wrap')
   assert.match(text, /\.dshmem-pre\{[^}]*overflow-wrap:break-word/, 'and must break an unbroken path')
+})
+
+await test('the panel offers the WRITE budget, and says "no limit" instead of a bare 0', async () => {
+  // The write budgets default to `0` = NO LIMIT. A bare `0` in a row labelled with a number reads as
+  // the strictest possible setting when it is in fact the loosest, so the read-only form says it in
+  // words — and the hint teaches what 0 means, because a control whose zero means "unlimited" is a
+  // trap otherwise.
+  const { text, json } = await renderWithStatus(STATUS)
+  assert.match(text, /Write budget/)
+  // Both fields are LABELLED, not two anonymous number boxes: "0 = unlimited" is useless if you cannot
+  // tell which box is files and which is bytes.
+  assert.match(text, /Files per pass/)
+  assert.match(text, /Bytes per file/)
+  assert.match(text, /0 = no limit \(the default\)/)
+  // Two editable number inputs, both with the floor at 0 — `0` is LEGAL here, unlike the injection cap,
+  // whose floor is 1. Asserted on the render tree (which carries props), because `collectText` emits
+  // tag names only and would match nothing.
+  const numbers = [...json.matchAll(/"min":0/g)]
+  assert.equal(numbers.length, 2, `both write-budget fields must accept 0: ${numbers.length}`)
+  assert.doesNotMatch(text, /undefined/)
+})
+
+await test('the panel reports the write budget read-only where the plugin would refuse the write', async () => {
+  // `generation.*` is refused in `mode: native` exactly like the injection cap, so the control must
+  // not be offered there — and the values must still be REPORTED, with 0 spelled out.
+  const { json, text } = await renderWithStatus({ ...STATUS, consumptionWritable: false, maxWrites: 0, maxWriteBytes: 16384 })
+  assert.doesNotMatch(json, /aria-label|Files per pass/, 'the editable fields must not be offered')
+  assert.match(text, /no limit/, 'the 0 budget is reported as "no limit"')
+  assert.match(text, /16384/, 'and a real limit is reported as its number')
 })
 
 await test('the panel offers the MODE, which is the way back in from a locked cap', async () => {
@@ -1541,9 +1574,12 @@ await test('no user-visible string is hardcoded in the component body', () => {
 })
 
 await test('the panel talks only to the /api/memory routes', () => {
-  const paths = [...source.matchAll(/['"](\/api\/memory\/[a-z]+)/g)].map((match) => match[1])
+  // `[a-z-]+`, not `[a-z]+`: a hyphenated path like `/api/memory/write-budget` was silently truncated
+  // to `/api/memory/write` and reported as an unknown route — the guard was right to fire, but on its
+  // own truncation rather than on a stray path.
+  const paths = [...source.matchAll(/['"](\/api\/memory\/[a-z-]+)/g)].map((match) => match[1])
   assert.ok(paths.length > 0)
-  const known = ['/api/memory/status', '/api/memory/file', '/api/memory/preview', '/api/memory/refresh', '/api/memory/flush', '/api/memory/trust', '/api/memory/switch', '/api/memory/budget', '/api/memory/scope', '/api/memory/mode']
+  const known = ['/api/memory/status', '/api/memory/file', '/api/memory/preview', '/api/memory/refresh', '/api/memory/flush', '/api/memory/trust', '/api/memory/switch', '/api/memory/budget', '/api/memory/scope', '/api/memory/mode', '/api/memory/write-budget']
   for (const path of paths) {
     assert.ok(known.includes(path), `unexpected route ${path}`)
   }
