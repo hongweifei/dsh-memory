@@ -254,6 +254,14 @@ function toHtml(node) {
     if (key.startsWith('data-') && value !== undefined) attrs.push(`${key}="${escapeHtml(String(value))}"`)
   }
   if (props.disabled === true) attrs.push('disabled')
+  // A `<details>` renders COLLAPSED by default. The injected memory block lives inside one, so every
+  // committed screenshot showed a collapsed disclosure — the screenshots never showed the very text
+  // this panel exists to display, and a real clipping bug (long lines cut mid-word) survived in them.
+  //
+  // Open ONLY the disclosure that holds the block (its child is a `<pre>`), not the scope rows: those
+  // are collapsed in the resting shape, and expanding them would document a state the panel is not
+  // normally in. `open` is a real HTML attribute, not one of our styles.
+  if (tag === 'details' && JSON.stringify(node.children ?? []).includes('"type":"pre"')) attrs.push('open')
   // Form controls need their OWN attributes, or the preview lies about them: without `type` a checkbox
   // renders as an unstyled white box, and without `value`/`min` the number input shows nothing and
   // loses its floor. The screenshot is delivery evidence, so it must carry what a browser needs.

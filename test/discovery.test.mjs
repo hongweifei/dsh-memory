@@ -41,6 +41,14 @@ console.log('dsh-memory package-shape tests')
 const pkgJsonPath = packageJsonPath()
 const installed = resolveInstalled('@dsh-external/dsh-memory/package.json') !== undefined
 const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf8'))
+// Whether the CLIENT half's inject target is present is a SEPARATE condition from "this plugin is
+// installed". On 2026-10-15 the npm-global harness was uninstalled and the profile's
+// `profiles/node_modules/@deepseek-ai` junction farm went with it, so `@deepseek-ai/dsh-client-ui-settings`
+// no longer resolves even though this plugin is still linked into the profile. The old predicate only
+// asked about the plugin, so the inject test FAILED instead of reporting itself skipped — which is
+// exactly what `harness-env.mjs` says these checks must do when the installation is not there.
+const injectTarget = pkg.dsh?.client?.inject?.[0]
+const injectResolvable = injectTarget === undefined ? false : resolveInstalled(`${injectTarget}/package.json`) !== undefined
 
 test('the package resolves from the profile the way the Loader resolves it', () => {
   assert.ok(pkgJsonPath.endsWith('package.json'))
@@ -83,7 +91,7 @@ test('the client artifact registers exactly the package id (module table key)', 
   assert.equal(ids[0], pkg.name, 'the registered id must equal the package name')
 })
 
-testIf(installed, 'the declared inject target is a real installed package', () => {
+testIf(injectResolvable, 'the declared inject target is a real installed package', () => {
   // A missing inject target would leave the client half waiting forever.
   const target = pkg.dsh.client.inject[0]
   const resolved = resolveInstalled(`${target}/package.json`)

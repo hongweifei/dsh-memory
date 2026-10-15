@@ -408,38 +408,42 @@ await test('the panel says it cannot tell which session it is about, instead of 
   assert.match(zh.text, /无法确定（当前打开了多个会话）/, 'and it is translated')
 })
 
+/**
+ * Render the panel against a canned `/preview` payload, CLICK the preview button, and return the
+ * rendered text. Shared by every preview test: the body ships collapsed, so a test that never clicks
+ * asserts against the resting card and passes for the wrong reason.
+ */
+async function clickPreview(previewPayload, status = STATUS) {
+  const registration = loadBundle(async (url) => {
+    if (String(url).includes('/preview')) return { ok: true, json: async () => previewPayload }
+    return { ok: true, json: async () => (String(url).includes('/status') ? status : { ok: true }) }
+  })
+  const clientPlugin = registration.factory((specifier) => React)
+  const { registrations, locale } = registerComponent(clientPlugin)
+  const { options, component } = registrations[0]
+  locale.setActive('en')
+  let renderer
+  await act(async () => {
+    renderer = TestRenderer.create(React.createElement(component, slotProps(locale, options)))
+  })
+  await act(async () => {
+    await Promise.resolve()
+  })
+  const button = renderer.root.findAll((node) => node.type === 'button' && String(node.children.join('')) === 'Preview')[0]
+  await act(async () => {
+    button.props.onClick()
+    await Promise.resolve()
+  })
+  const text = collectText(renderer.toJSON())
+  renderer.unmount()
+  return text
+}
+
 await test('the preview says WHICH question it answered when no session is in scope', async () => {
   // The settings page is a global surface. When the Host had no session to speak for, the preview
   // describes what a session starting NOW would receive — a different claim from "your next step".
   // Both are useful; showing an error instead is what made the button useless, and conflating the two
   // would be a panel that lies about what it read.
-  const clickPreview = async (previewPayload) => {
-    const registration = loadBundle(async (url) => {
-      if (String(url).includes('/preview')) return { ok: true, json: async () => previewPayload }
-      return { ok: true, json: async () => (String(url).includes('/status') ? STATUS : { ok: true }) }
-    })
-    const clientPlugin = registration.factory((specifier) => React)
-    const { registrations, locale } = registerComponent(clientPlugin)
-    const { options, component } = registrations[0]
-    locale.setActive('en')
-    let renderer
-    await act(async () => {
-      renderer = TestRenderer.create(React.createElement(component, slotProps(locale, options)))
-    })
-    await act(async () => {
-      await Promise.resolve()
-    })
-    // The preview body sits behind a button, so it must actually be clicked.
-    const button = renderer.root.findAll((node) => node.type === 'button' && String(node.children.join('')) === 'Preview')[0]
-    await act(async () => {
-      button.props.onClick()
-      await Promise.resolve()
-    })
-    const text = collectText(renderer.toJSON())
-    renderer.unmount()
-    return text
-  }
-
   const block = { text: 'BLOCK', status: 'loaded', tokens: 12, maxTokens: 2000, included: [], omitted: [], truncated: [], overflowed: false }
   const global = await clickPreview({
     available: true, mode: 'auto', scope: 'global', session: { cwd: 'D:\\proj' },
@@ -456,6 +460,86 @@ await test('the preview says WHICH question it answered when no session is in sc
     snapshot: block, files: [],
   })
   assert.doesNotMatch(live, /No session is open/)
+})
+
+await test('a MUTED session previews the verdict without crashing the panel', async () => {
+  // `previewMemory` answers a muted session with the verdict ALONE — `{ available: true, switchedOff:
+  // true, step: { action: 'silent', reason } }` — and deliberately no `snapshot`, because running the
+  // pass would describe a step that will not happen. The card read `preview.snapshot.maxTokens` for
+  // its note, so the panel THREW while rendering on exactly the state where the preview is most
+  // useful. (The integration suite covered the payload; nothing covered the client reading it.)
+  const muted = await clickPreview({
+    available: true, mode: 'off', switchedOff: true, scope: 'session',
+    step: { action: 'silent', reason: 'memory is switched off for this session' },
+  })
+  // It must render the verdict, and say what it costs without inventing a budget it was not given.
+  assert.match(muted, /Next step/)
+  assert.match(muted, /nothing \(unchanged\)/, 'the verdict is stated, in the panel language')
+  assert.match(muted, /0 tokens/, 'no block was sent, so no budget to report either')
+  assert.doesNotMatch(muted, /undefined/, 'and nothing renders as undefined')
+  assert.doesNotMatch(muted, /NaN/)
+  // There is no block to fold out for a muted session — that IS the answer.
+  assert.doesNotMatch(muted, /Full block for a fresh session/)
+})
+
+await test('the preview translates the Host verdict instead of printing its code', async () => {
+  // A Chinese panel reading "snapshot" is the half-English panel this project refuses. The raw code
+  // stays in the tooltip, with the machine reason.
+  const block = { text: 'BLOCK', status: 'loaded', tokens: 12, maxTokens: 2000, included: [], omitted: [], truncated: [], overflowed: false }
+  for (const [action, want] of [
+    ['silent', /nothing \(unchanged\)/],
+    ['snapshot', /the full block/],
+    ['delta', /only what changed/],
+    ['none', /nothing \(nothing to inject\)/],
+  ]) {
+    const text = await clickPreview({
+      available: true, mode: 'auto', scope: 'session', session: { id: 's', cwd: 'D:\\proj' },
+      step: { action, reason: 'machine reason', tokens: 1, text: 'BLOCK', changed: [], removed: [] },
+      snapshot: block, files: [],
+    })
+    assert.match(text, want, `${action} must be shown in words`)
+    assert.doesNotMatch(text, new RegExp(`>${action}<`), `${action} must not be printed raw`)
+  }
+  // An action this build does not know is admitted rather than echoed.
+  const unknown = await clickPreview({
+    available: true, mode: 'auto', scope: 'session', session: { id: 's', cwd: 'D:\\proj' },
+    step: { action: 'something-new', reason: 'r', tokens: 1, text: 'BLOCK', changed: [], removed: [] },
+    snapshot: block, files: [],
+  })
+  assert.match(unknown, /an action this panel does not know/)
+})
+
+await test('the preview reports the SNAPSHOT’s cost, not zero', async () => {
+  // `planInjection` only set `tokens` for a delta (where the delta's cost differs from the block's), so
+  // a snapshot reported `0` — the panel said "0 of 10000 tokens used" while showing a full block
+  // underneath it. The block's own cost is the honest number for a snapshot.
+  const block = { text: 'BLOCK', status: 'loaded', tokens: 1234, maxTokens: 10000, included: [], omitted: [], truncated: [], overflowed: false }
+  const text = await clickPreview({
+    available: true, mode: 'auto', scope: 'session', session: { id: 's', cwd: 'D:\\proj' },
+    step: { action: 'snapshot', reason: 'no baseline', tokens: 1234, text: 'BLOCK', changed: [], removed: [] },
+    snapshot: block, files: [],
+  })
+  assert.match(text, /1234 of 10000 tokens used/, 'the real cost is reported')
+
+  // And with the Host sending no per-step count (an older build), the block's own number is used
+  // rather than a zero that would contradict the text below it.
+  const fallback = await clickPreview({
+    available: true, mode: 'auto', scope: 'session', session: { id: 's', cwd: 'D:\\proj' },
+    step: { action: 'snapshot', reason: 'no baseline', text: 'BLOCK', changed: [], removed: [] },
+    snapshot: block, files: [],
+  })
+  assert.match(fallback, /1234 of 10000 tokens used/)
+  assert.doesNotMatch(fallback, /^0 of/)
+})
+
+await test('the injected block WRAPS instead of clipping long lines', async () => {
+  // `<pre>` defaults to `white-space: pre`, so a long memory line ran off the right edge and was cut
+  // mid-word with no way to read it — visible in the committed screenshots. Memory is prose plus file
+  // paths, so this is the normal case, not an edge one. Asserted from the REAL rendered component, so
+  // dropping the rule fails here.
+  const { text } = await renderWithStatus(STATUS)
+  assert.match(text, /\.dshmem-pre\{[^}]*white-space:pre-wrap/, 'the block must wrap')
+  assert.match(text, /\.dshmem-pre\{[^}]*overflow-wrap:break-word/, 'and must break an unbroken path')
 })
 
 await test('the panel offers the MODE, which is the way back in from a locked cap', async () => {

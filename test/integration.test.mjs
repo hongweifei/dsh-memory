@@ -1337,6 +1337,14 @@ await test('previewMemory describes the next step without changing it', async ()
   assert.match(first.snapshot.text, /previewable knowledge/)
   assert.ok(first.snapshot.tokens > 0)
   assert.ok(first.step.text, 'the snapshot is what this step would send, so it carries the text')
+  // `step.tokens` is what the PANEL shows, and it used to be 0 for a snapshot: `planInjection` only set
+  // `tokens` on the delta path (where the delta's cost differs from the block's), so the panel read
+  // "0 of 2000 tokens used" while displaying a full block underneath. A snapshot costs the whole block.
+  assert.equal(
+    first.step.tokens,
+    first.snapshot.tokens,
+    'a snapshot costs the whole block, so the step and the snapshot report the same tokens',
+  )
 
   // Nothing was recorded and nothing was injected by the preview itself.
   assert.equal(injectedResults.length, 0, 'a preview must never fire consumption.onResult')
