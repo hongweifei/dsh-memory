@@ -2517,6 +2517,30 @@ await test('every value the memory tool returns satisfies its own declared outpu
   assert.deepEqual(validateJsonSchemaValue(schema, deletion), [])
 })
 
+await test('a missing path is refused as missing, not as malformed', async () => {
+  // A refusal that misdirects is worse than a terse one. `path` is optional in the schema (only
+  // `action` is required, since `list`/`search` need none), so omitting it on `read`/`write`/`edit`/
+  // `delete` used to fall through to the FORMAT check and answer "path must be a relative .md path
+  // inside the scope root" — blaming the spelling of a path that was never sent. Hit live while
+  // editing a memory note, which cost several turns chasing a format problem that did not exist.
+  const fs = makeFs({})
+  const { ctx, tools } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, loadConfig({ mode: 'custom', generation: { turnComplete: { enabled: false } } }))
+  const agent = makeAgent(makeSession([], 'C:\\proj'))
+
+  for (const action of ['read', 'write', 'edit', 'delete']) {
+    const result = await runTool(tools, agent, action === 'write' ? { action, content: 'x' } : { action })
+    assert.equal(result.ok, false, `${action} without a path must be refused`)
+    assert.match(result.message, /path is required/, `${action}: must say the path is MISSING`)
+    assert.doesNotMatch(result.message, /must be a relative/, `${action}: must not blame the format`)
+  }
+
+  // A path that IS present but malformed still gets the format message — the two cases stay distinct.
+  const malformed = await runTool(tools, agent, { action: 'read', path: '../escape.md' })
+  assert.equal(malformed.ok, false)
+  assert.match(malformed.message, /must be a relative \.md path/, 'a real format problem keeps its own message')
+})
+
 await test('the memory tool edits one passage, leaving the rest of the file alone', async () => {
   // The reason `edit` exists: `write` replaces the whole file, so a model that means to change one
   // line must reproduce every other line perfectly. Memory files are prose, and a whole-file rewrite
