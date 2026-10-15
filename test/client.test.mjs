@@ -319,6 +319,31 @@ function collectText(node) {
   const own = typeof node.type === 'string' ? `<${node.type}>` : ''
   return `${own}${collectText(node.children)}`
 }
+await test('the scopes section comes LAST, after every control and the editor', async () => {
+  // The owner asked for this explicitly: "将作用域区放到下面去". The section is the only one that grows
+  // without bound (one row per project that has memory), so while it sat above the controls it pushed
+  // the settings somebody opened this page to change off the first screen.
+  //
+  // Nothing else pinned the order, which is exactly why this test exists: every other assertion in this
+  // file is order-INDEPENDENT, so moving the section back would leave the whole suite green.
+  const { text } = await renderWithStatus(STATUS)
+  const at = (label) => {
+    const index = text.indexOf(label)
+    assert.ok(index >= 0, `the panel must render "${label}"`)
+    return index
+  }
+  // The SECTION is located by its note, not by the word "Scopes": the status section contains a
+  // `Global scopes` control, so `indexOf('Scopes')` matches THAT and would report the wrong position —
+  // a verification script of mine did exactly this and "found" the section in the middle of the page.
+  const scopes = at('Every project keeps its own memory')
+  for (const label of ['Status', 'Injection budget (consumption)', 'Latest activity', 'Edit memory file']) {
+    assert.ok(at(label) < scopes, `"${label}" must come before the scopes section`)
+  }
+  // The project rows really are inside the section, so the assertions above are about the section and
+  // not a stray mention of the word somewhere else on the page.
+  assert.match(text.slice(scopes), /Demo project/, 'the scope rows follow the heading')
+})
+
 await test('the panel renders the full status, scopes, budget, and activity', async () => {
   const { text, json } = await renderWithStatus(STATUS)
   // Header and description.
