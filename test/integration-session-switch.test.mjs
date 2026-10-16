@@ -756,6 +756,73 @@ await test('the budget route writes the injection cap through configEditor', asy
   assert.equal(numeric.json.maxTokens, 900)
 })
 
+await test('the budget route CLEARS the cap with null — the one spelling of "no limit"', async () => {
+  // Qoder's own contract is an ABSENT field (`maxTokens ?? Number.POSITIVE_INFINITY`), so "no limit"
+  // must DELETE the key rather than persist a zero (which the schema refuses) or an Infinity (which is
+  // not JSON). The persisted result is asserted key by key, and then the plugin is loaded from it: an
+  // absence that the plugin would reject would be worse than a wrong number.
+  const fs = makeFs({})
+  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
+  apply(ctx, loadConfig({ mode: 'custom', generation: { turnComplete: { enabled: false } } }))
+  let current = { enabled: true, mode: 'custom', consumption: { maxTokens: 2000, overflow: 'truncate' }, trust: { folders: ['x'] } }
+  let edits = 0
+  services.set('configEditor', {
+    entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
+    edit: async (entry, change) => {
+      edits += 1
+      current = change(current, {})
+    },
+  })
+
+  const cleared = await callRoute(routes, '/api/memory/budget', { method: 'POST', body: { maxTokens: null } })
+  assert.equal(cleared.status, 200)
+  assert.equal(cleared.json.maxTokens, null, 'the reply says the cap is gone, not zero')
+  assert.equal(edits, 1)
+  assert.deepEqual(current, {
+    enabled: true,
+    mode: 'custom',
+    consumption: { overflow: 'truncate' },
+    trust: { folders: ['x'] },
+  }, 'the key is REMOVED, and every sibling survives')
+  assert.ok(!('maxTokens' in current.consumption))
+
+  // What was persisted is a configuration the plugin still activates on, and it reports NO cap.
+  const again = makeCtx(makeFs({}), makeLlm('{}'))
+  apply(again.ctx, loadConfig(current))
+  assert.equal((await callRoute(again.routes, '/api/memory/status')).json.maxTokens, undefined)
+})
+
+await test('/memory-budget reports and clears the cap, and says "no limit" instead of a number', async () => {
+  // The command and the panel share one writer, so the same contract must be reachable from both. The
+  // command is also where "no limit" is spelled out in words, which is what an empty control shows.
+  const capped = switchFixture({ config: { consumption: { maxTokens: 2000 } } })
+  let current = { mode: 'custom', consumption: { maxTokens: 2000, overflow: 'truncate' } }
+  capped.services.set('configEditor', {
+    entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
+    edit: async (entry, change) => {
+      current = change(current, {})
+    },
+  })
+
+  const status = await runCommand(capped.commands, 'memory-budget')
+  assert.match(status.text, /injection cap: 2000 tokens/)
+
+  const cleared = await runCommand(capped.commands, 'memory-budget', { rawInput: 'unlimited' })
+  assert.equal(cleared.kind, 'success')
+  assert.match(cleared.text, /no limit/)
+  assert.ok(!('maxTokens' in current.consumption), 'the command deletes the key, exactly like the route')
+
+  // A deployment with no cap configured says so in words — the default, and Qoder's own.
+  const uncapped = switchFixture()
+  const bare = await runCommand(uncapped.commands, 'memory-budget')
+  assert.match(bare.text, /no limit \(the default, like Qoder\)/)
+
+  // And a bogus action names both legal forms rather than guessing at a number.
+  const bogus = await runCommand(uncapped.commands, 'memory-budget', { rawInput: 'lots' })
+  assert.equal(bogus.kind, 'error')
+  assert.match(bogus.text, /unlimited/)
+})
+
 await test('the budget route refuses a value the schema would refuse, and says how to inject nothing', async () => {
   const fs = makeFs({})
   const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
@@ -767,16 +834,17 @@ await test('the budget route refuses a value the schema would refuse, and says h
     },
   })
 
-  // 0 is the interesting one: `render.js` WOULD honour it, but the schema and the SDK both require a
-  // positive integer, so a route that accepted it would write a configuration the plugin rejects.
-  // The refusal names the real way to inject nothing.
+  // 0 is the interesting one: it is not a budget at all, and the schema and the SDK both refuse it, so
+  // a route that accepted it would write a configuration the plugin rejects. The refusal names both
+  // legal ways out — a positive integer, or `null` for no limit — and how to inject nothing at all.
   const zero = await callRoute(routes, '/api/memory/budget', { method: 'POST', body: { maxTokens: 0 } })
   assert.equal(zero.status, 400)
   assert.match(zero.json.error, /at least 1/)
   assert.match(zero.json.error, /turn consumption off/, 'the refusal says how to really inject nothing')
 
   // `Number('')` is 0 and `Number(true)` is 1: neither may become a silent configuration change.
-  for (const bad of ['', '  ', 'abc', '1.5', '1e3', '0x10', true, null, undefined, -5, {}, []]) {
+  // (`null` is NOT in this list: it is the one legal way to ask for no cap, tested below.)
+  for (const bad of ['', '  ', 'abc', '1.5', '1e3', '0x10', true, undefined, -5, {}, []]) {
     const response = await callRoute(routes, '/api/memory/budget', { method: 'POST', body: { maxTokens: bad } })
     assert.equal(response.status, 400, `maxTokens=${JSON.stringify(bad)} must be refused`)
   }
@@ -798,7 +866,9 @@ await test('the status route publishes the legal floor for the cap', async () =>
   const { routes } = switchFixture()
   const { json } = await callRoute(routes, '/api/memory/status')
   assert.equal(json.minTokens, 1)
-  assert.equal(json.maxTokens, 2000)
+  // No cap configured is reported as NO cap — not as a number. Qoder's default is an absent field.
+  assert.equal(json.maxTokens, undefined)
+  assert.ok(!('maxTokens' in JSON.parse(JSON.stringify(json))), 'an absent cap must not ride the wire')
 })
 
 await test('writing the cap in `native` mode is REFUSED, and the plugin keeps activating', async () => {
@@ -842,8 +912,8 @@ await test('writing the cap in `native` mode is REFUSED, and the plugin keeps ac
   apply(again.ctx, loadConfig(persisted))
   assert.equal(
     (await callRoute(again.routes, '/api/memory/status')).json.maxTokens,
-    2000,
-    'the plugin still loads, with its own default cap',
+    undefined,
+    'the plugin still loads, with no cap (its default)',
   )
 })
 

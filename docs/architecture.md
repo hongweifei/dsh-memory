@@ -83,7 +83,7 @@ lib/client.js    浏览器半：设置面板 + 对话页的记忆按钮（一个
 |---|---|---|
 | 每个 host 模块 | 逻辑 ≤ 500 行 | 最大 `host/routes.js` 约 498 |
 | `index.js` | ≤ 300 行（接线） | 300 |
-| `lib/client.js` | 逻辑 ≤ 830 行、内联数据 ≤ 260 行 | 逻辑 828、内联数据 216 |
+| `lib/client.js` | 逻辑 ≤ 870 行、内联数据 ≤ 260 行 | 逻辑 838、内联数据 216 |
 
 host 的 500 行**有牙齿**：`routes.js` 撞线时拆出了 `config-route.js`，`index.js` 撞线时压缩了接线。
 client 的那条线是**防漂移**，不是"要加功能先删点东西"：它的上限设在当前形状之上，理由与裁定过程
@@ -102,7 +102,8 @@ client 的那条线是**防漂移**，不是"要加功能先删点东西"：它�
 
 **消费（consumption）**：`agent/pre-step` →（会话开关）→ `pipeline/consumption` 发现文件
 （`memory/excludes` 排除、`memory/imports` 展开 `@`、`memory/jit` 判条件加载、`session/trust` 过信任门）
-→ `memory/render` 在 `consumption.maxTokens` 下投影整块并逐文件哈希 → 未变则静默、变了才发增量。
+→ `memory/render` 在 `consumption.maxTokens` 下投影整块并逐文件哈希（**不设上限**——即该键缺席，
+Qoder 的默认——时整块直接注入，丢弃/截断那套逻辑根本不进）→ 未变则静默、变了才发增量。
 `pipeline/consumption-plan` 把"下一步会怎样"抽成纯函数，供面板预览只读复用。
 
 ## 6. 加东西时的清单

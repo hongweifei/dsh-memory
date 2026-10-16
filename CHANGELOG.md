@@ -28,6 +28,31 @@
 
 ### 新增
 
+**注入上限默认改为「不设上限」——照 Qoder 的契约，而不是自造的 2000（2026-10-16）**
+
+- **契约是这样解出来的**（本机 `qodercli@1.1.64` 的 minified bundle）：`consumption.maxTokens` 是**可选**的，
+  只在给了值时才校验（`if (void 0 !== e && (… !Number.isInteger(e) || e <= 0)) throw …`）；
+  真正消费记忆的加载器写的是 `let r = A.maxTokens ?? Number.POSITIVE_INFINITY`
+  ⇒ **不写就是不设限**。CLI 的设置表里也**没有**记忆注入预算这一项：带 `token` / `budget` 的数字项只有
+  模型输出与 Context Management（`protectionThresholdTokens: 5e4` / `minPrunableThresholdTokens: 3e4`）。
+  所以 `CONSUMPTION_DEFAULTS.maxTokens: 2000` 删掉了——那是移植时自己定的（第一个提交 `aa7b051` 就在），
+  Qoder 从来没有这个默认值。
+- **没有兼容层**：旧配置里显式写着的 `maxTokens` 照旧生效，没写的从此就是不设限；不做迁移、不做双读。
+  一处拼写：**不设限 = 字段缺席**。`render.js` 在 `maxTokens === undefined` 时整块注入，
+  丢弃/截断那套逻辑根本不进；同时删掉旧的 `maxTokens <= 0` 分支——那是"0＝不注入"这个废弃说法的残留，
+  而 `0` 与过去一样被 schema 拒绝（"完全不注入"始终是 `consumption.enabled: false`）。
+- **写入侧跟着改**：`POST /api/memory/budget` 收正整数或 `null`，`null` 走 `withoutConsumptionCap`
+  **删掉那个键**（不是写 0，也不是 Infinity；`Infinity` 不是合法 JSON）；`/memory-budget unlimited`
+  走同一个实现。面板那个数字框**留空即不设上限**，占位符与只读行都写「不设上限」，
+  不再出现 `undefined` 或多出来的数字。状态载荷在没有上限时**不带这个键**，预览显示"占用 N token"。
+
+验证：`npm test` 17 个套件 / **479 项全绿**。三条负面对照都真红、并已逐条还原：
+① 把 `maxTokens: 2000` 塞回默认值 ⇒ unit 与 integration-host 立刻红（期望 `undefined`、实得 `2000`）；
+② 把 `withoutConsumptionCap` 改成原样返回 ⇒ "清空上限"那条红在**键没被删掉**；
+③ 面板按旧写法 `String(status.maxTokens)` 渲染 ⇒ client 测试红在 `"value":"undefined"`。
+`client.js` 逻辑 828 → 838 行，防漂移上限 830 → 870——这是**加了一个真实状态**（"不设上限"），
+不是面板自己膨胀，所以抬线而不是压功能。
+
 **项目结构重组：`lib/` 分六个子系统、测试按主题拆分、README 重写（2026-10-16）**
 
 结构和文档一起做的，因为它们是同一个问题的两半：**代码里最大的文件是测试，文档里最长的文件是自述**。

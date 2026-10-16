@@ -165,10 +165,12 @@ await test('the graph parser really resolved every relative specifier', () => {
  * panel cannot quietly double in size, not so that a panel feature has to be
  * dropped to fit under it. The owner's ruling is that this project should not
  * contort the UI for a self-imposed line count, so the ceiling is set above the
- * current shape rather than the shape being cut to the ceiling.
+ * current shape rather than the shape being cut to the ceiling. It moved 830 → 870
+ * when the injection cap gained an explicit "no limit" state (Qoder's own default),
+ * which is a feature, not drift.
  */
 const MAX_HOST_LOGIC_LINES = 500
-const MAX_CLIENT_LOGIC_LINES = 830
+const MAX_CLIENT_LOGIC_LINES = 870
 const MAX_INLINE_DATA_LINES = 260
 
 await test('no module is a god file', () => {

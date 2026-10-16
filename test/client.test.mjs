@@ -775,6 +775,68 @@ await test('the panel keeps the cap editable wherever the plugin accepts it', as
   assert.doesNotMatch(json, /Read-only in mode/)
 })
 
+await test('the panel shows "no limit" when the Host publishes no cap', async () => {
+  // Qoder's default is an ABSENT cap, so the Host sends no value at all. The box is then EMPTY with a
+  // placeholder saying why — an empty control with no explanation reads as unset/broken — and the row
+  // must never print `undefined` or a number nobody set (the old panel rendered `2000` from its own
+  // default, which is exactly the invented cap this contract removed).
+  const { text, json } = await renderWithStatus({ ...STATUS, maxTokens: undefined })
+  assert.match(json, /"placeholder":"no limit"/)
+  assert.match(json, /"value":""/)
+  assert.doesNotMatch(json, /"value":"undefined"/)
+  assert.match(text, /How much memory may enter the context/)
+
+  // The read-only form (`native`) says it in words rather than rendering an empty cell.
+  const native = await renderWithStatus({ ...STATUS, maxTokens: undefined, mode: 'native', consumptionWritable: false })
+  assert.match(native.text, /Injection cap \(tokens\)\n<span>no limit/)
+})
+
+await test('the cap control writes a number, and an EMPTY box clears it — null, not zero', async () => {
+  // The write path, driven for real. An empty box is "no limit", whose one wire spelling is `null`
+  // (the route then DELETES the key, as Qoder's absent field). Zero would be a different statement,
+  // and Infinity is not JSON.
+  const posted = []
+  const registration = loadBundle(async (url, init) => {
+    if (init !== undefined) posted.push({ url: String(url), body: init.body })
+    return { ok: true, json: async () => (String(url).includes('/status') ? STATUS : { ok: true, maxTokens: null }) }
+  })
+  const clientPlugin = registration.factory((specifier) => React)
+  const { registrations, locale } = registerComponent(clientPlugin)
+  const { options, component } = registrations[0]
+  let renderer
+  await act(async () => {
+    renderer = TestRenderer.create(React.createElement(component, slotProps(locale, options)))
+  })
+  await act(async () => {
+    await Promise.resolve()
+  })
+
+  // The cap's own input, addressed by CLASS: the write-budget row has two more number inputs, so a
+  // positional lookup would silently edit a different field (a trap this suite has hit twice before).
+  const find = () => renderer.root.findAll((node) => node.type === 'input' && String(node.props.className).includes('dshmem-number'))[0]
+  assert.equal(find().props.value, '2000', 'the persisted cap is what the box shows')
+
+  await act(async () => {
+    find().props.onChange({ target: { value: '1500' } })
+  })
+  await act(async () => {
+    find().parent.findAll((node) => node.type === 'button')[0].props.onClick()
+    await Promise.resolve()
+  })
+  assert.equal(posted.at(-1).url, '/api/memory/budget')
+  assert.deepEqual(JSON.parse(posted.at(-1).body), { maxTokens: 1500 })
+
+  await act(async () => {
+    find().props.onChange({ target: { value: '' } })
+  })
+  await act(async () => {
+    find().parent.findAll((node) => node.type === 'button')[0].props.onClick()
+    await Promise.resolve()
+  })
+  assert.deepEqual(JSON.parse(posted.at(-1).body), { maxTokens: null }, 'an empty box is "no limit"')
+  renderer.unmount()
+})
+
 await test('the panel saves the global scopes through the scope route', async () => {
   // The write path, driven for real: pick a different state, click Save, and assert the exact body.
   const calls = []

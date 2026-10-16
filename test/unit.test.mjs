@@ -149,7 +149,10 @@ test('resolveMemoryConfig fills the plugin defaults', () => {
     timeoutMs: 10000,
     onGateError: 'skip',
   })
-  assert.equal(resolved.consumption.maxTokens, 2000)
+  // The injection cap has NO default: Qoder's own contract is an absent field, and its loader turns
+  // that into `Number.POSITIVE_INFINITY`. A number here would be this port inventing a cap nobody set
+  // — which is what the 2000 that shipped first was.
+  assert.equal(resolved.consumption.maxTokens, undefined)
   assert.equal(resolved.consumption.overflow, 'truncate')
   assert.equal(resolved.consumption.failureMode, 'best_effort')
 })
@@ -336,10 +339,18 @@ test('over budget drops broadest scope first, truncates the last', () => {
   assert.ok(measure([{ content: [{ type: 'text', text: out.text }] }]) <= 300)
 })
 
-test('zero budget injects nothing', () => {
-  const out = renderMemoryContext([file('user:MEMORY.md', 'hello')], 0, measure)
-  assert.equal(out.text, undefined)
-  assert.equal(out.included.length, 0)
+test('an absent cap means NO limit, and every file is injected', () => {
+  // The default, and Qoder's own: `maxTokens ?? Number.POSITIVE_INFINITY`. This used to be asserted as
+  // "zero budget injects nothing", which was a different contract (`0` is refused by the schema anyway).
+  const out = renderMemoryContext([file('user:MEMORY.md', 'x'.repeat(4000)), file('project:MEMORY.md', 'y'.repeat(4000))], undefined, measure)
+  assert.deepEqual(out.included, ['user:MEMORY.md', 'project:MEMORY.md'])
+  assert.deepEqual(out.omitted, [])
+  assert.deepEqual(out.truncated, [])
+  assert.equal(out.overflowed, undefined)
+  assert.match(out.text, /project:MEMORY\.md/)
+  // A delta goes through the same seam, so an unlimited cap cannot drop changes either.
+  const delta = renderMemoryDelta({ changed: [file('user:MEMORY.md', 'x'.repeat(4000))], removed: [] }, undefined, measure)
+  assert.match(delta.text, /user:MEMORY\.md/)
 })
 
 test('a truncated index carries Qoder own notice, a topic file does not', () => {
@@ -877,8 +888,9 @@ test('the environment overrides the scopes, the dream pass, and can switch memor
 
   // Environment wins over an explicit setting, as it does in Qoder's headless path.
   assert.equal(resolveMemoryConfig({ userScope: true }, { DSH_MEMORY_USER: 'false' }).userScope, false)
-  // And nothing else is reachable from the environment.
-  assert.equal(resolveMemoryConfig({}, { DSH_MEMORY_TOKEN_BUDGET: '10' }).consumption.maxTokens, 2000)
+  // And nothing else is reachable from the environment. The cap stays ABSENT — no limit — which is
+  // what a config with no cap resolves to; an env var must not invent one either.
+  assert.equal(resolveMemoryConfig({}, { DSH_MEMORY_TOKEN_BUDGET: '10' }).consumption.maxTokens, undefined)
 })
 
 /* ================= turn pacing ================= */
@@ -1502,9 +1514,14 @@ test('the cap floor is one shared constant, so no surface can offer an illegal v
   assert.equal(CONSUMPTION_MIN_TOKENS, 1)
   assert.throws(() => Config({ consumption: { maxTokens: 0 } }).consumption, /maxTokens/)
   assert.equal(Config({ consumption: { maxTokens: 1 } }).consumption.maxTokens, 1)
+  // The default is NO cap, not a number: the schema leaves the field absent, which is Qoder's own
+  // "no limit". Asserted here so a future default cannot slip back in unnoticed.
+  assert.equal(Config({}).consumption.maxTokens, undefined)
+  assert.equal(Config({ consumption: {} }).consumption.maxTokens, undefined)
   assert.throws(() => validateMemoryConfig({ consumption: { maxTokens: 0 } }), /at least 1/)
   assert.throws(() => validateMemoryConfig({ consumption: { maxTokens: 1.5 } }), /at least 1/)
   validateMemoryConfig({ consumption: { maxTokens: 1 } })
+  validateMemoryConfig({ consumption: {} })
 })
 
 test('the global scope vocabulary round-trips, and only offers states it can write', () => {

@@ -138,7 +138,7 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
       # onResult: !!js '(r) => console.log("memory", r.status)'
     consumption:
       enabled: true
-      maxTokens: 2000          # 记忆注入上限（token），必须是正整数；要一个字都不注入就 enabled: false
+      # maxTokens: 2000         # 可选。不写＝不设上限（默认，与 Qoder 相同）；写了必须是正整数
       overflow: truncate       # truncate（截断到放得下）| fail_query（放不下就报错）
       failureMode: best_effort # best_effort（单个文件读失败也继续）| fail_query（报错）
       # files:                 # custom 模式下替代自动发现
@@ -163,9 +163,15 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
 （按加载顺序），只剩一个时才对它做截断。**模型自己的输出**上限是另一个旋钮
 （`generation.maxOutputTokens`），两者互不相干。
 
-**上限必须是正整数**：schema 是 `natural().min(1)`、SDK 也要求正整数，所以 `0` 在配置层就被拒绝，
-根本到不了渲染层。**要完全不注入就设 `consumption.enabled: false`**。那个下限是**一个共享常量**
+**注入上限默认不设——与 Qoder 一致**：`consumption.maxTokens` 是**可选**的，**不写就是不设上限**
+（Qoder 的加载器就是 `maxTokens ?? Number.POSITIVE_INFINITY`，它的设置里也没有"记忆注入预算"这一项）。
+要设就设**正整数**：schema 是 `natural().min(1)`、SDK 也要求正整数，所以 `0` 在配置层就被拒绝，
+到不了渲染层；**要完全不注入就设 `consumption.enabled: false`**。那个下限是**一个共享常量**
 （`CONSUMPTION_MIN_TOKENS`）：schema、`/api/memory/budget` 路由、面板输入框的 `min` 都读它。
+面板里**留空即不设上限**（保存时清掉这个键，而不是写 0），命令行是 `/memory-budget unlimited`。
+
+> 本插件第一版把 `maxTokens` 默认成 `2000`。那**不是** Qoder 的默认值，是移植时自己定的；
+> 默认不设上限之后，"没配过"与"配了一个上限"才在行为上真正区分开。
 
 **`maxOutputTokens` 默认 0**：本插件第一版抄了 Qoder `summarizer-*` 任务类型的 `2e3`，那是给摘要的，
 而 pass 是**用工具调用写文件**的——文件正文就在工具参数里，固定小上限会让推理模型在吐出工具调用之前
@@ -378,7 +384,8 @@ pass 内部**多写一个文件——pass 本来就在跑，所以开启日刊�
 **写入预算**（每轮文件数 + 单文件字节）和**三个策略开关**（自动记录 + 记忆巩固 + 日刊）。
 六项共用同一个写入器与同一套规则（`host/config-route.js`：收窄 → 用真 schema 校验 → `configEditor.edit`）。
 除模式与全局作用域外，其余四项都是 `generation.*` / `consumption.*`，**在 `native` 下会被拒绝**，
-所以面板在那里对它们只报告值、不给控件。
+所以面板在那里对它们只报告值、不给控件。**注入上限那个框留空就是"不设上限"**（默认）：保存时删掉
+`consumption.maxTokens` 这个键，而不是写 0——"没配过"和"配了一个上限"因此是两件不同的事。
 
 **作用域区放在最底是有意的**：它是唯一会**无限增长**的区块（每个有记忆的项目一行），放在控件上方会把
 「打开这个页面本来要改的设置」挤出第一屏。每行写**工作区名字**（查不到就回退成 `projectKey` 目录名），
@@ -411,7 +418,7 @@ harness 也**没有"在文件管理器里打开"的能力**（曾实现过，按
 | `refresh` / `flush` | 重新加载 / 等落盘 |
 | `trust` | 目录信任的授予与撤销 |
 | `switch` | 会话级模式（读要会话，写要会话） |
-| `budget` / `write-budget` / `generation` / `scope` / `mode` | 面板可写项 |
+| `budget` / `write-budget` / `generation` / `scope` / `mode` | 面板可写项（`budget` 收正整数或 `null`，`null`＝清掉上限） |
 
 ## 9. 与 Qoder 的契约映射
 
