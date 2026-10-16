@@ -287,11 +287,22 @@ await test('a scope is labelled with its workspace name, not its directory slug'
   // that, because the slug cannot be decoded back into a path.
   const active = `${HOME}\\projects\\--D-code-demo--\\memory`
   const orphan = `${HOME}\\projects\\--D-code-orphan--\\memory`
-  const fs = makeFs({ [USER_MEMORY]: '# User', [`${active}\\MEMORY.md`]: '# Demo', [`${orphan}\\MEMORY.md`]: '# Orphan' })
+  // A registered workspace whose title is empty: the row must still be named after the
+  // directory, not left undefined. This path is POSIX-shaped on purpose, so the expected
+  // label is the same last segment on every platform.
+  const named = `${HOME}\\projects\\--code-named--\\memory`
+  const fs = makeFs({
+    [USER_MEMORY]: '# User',
+    [`${active}\\MEMORY.md`]: '# Demo',
+    [`${orphan}\\MEMORY.md`]: '# Orphan',
+    [`${named}\\MEMORY.md`]: '# Named',
+  })
   const { ctx, routes, services, setInitiator } = makeCtx(fs, makeLlm('{}'))
   services.set('workspaceRegistry', {
     list: () => [
       { id: 'ws-1', path: 'D:\\code\\demo', title: 'Demo project' },
+      // A record with no title keeps its directory name as the row title.
+      { id: 'ws-2', path: '/code/named' },
       // A record whose path is not a string is skipped, not guessed at.
       { id: 'ws-3', path: 42 },
     ],
@@ -304,6 +315,11 @@ await test('a scope is labelled with its workspace name, not its directory slug'
   // The user scope has no workspace, so it keeps its id; that is its name.
   assert.equal(labels.user, undefined, 'the user scope stays `user`')
   assert.equal(labels['--D-code-demo--'], 'Demo project', 'the workspace title is the row title')
+  assert.ok(
+    String(labels['--code-named--']).endsWith('named'),
+    `a title-less workspace falls back to its directory name, got ${labels['--code-named--']}`,
+  )
+  assert.notEqual(labels['--code-named--'], '--code-named--', 'the slug is not a name a person reads')
   // A project nobody registered keeps the slug rather than inventing a name.
   assert.equal(labels['--D-code-orphan--'], undefined, 'an unknown project is not renamed')
 
@@ -312,7 +328,7 @@ await test('a scope is labelled with its workspace name, not its directory slug'
   apply(bare.ctx, trustConfig())
   bare.setInitiator(makeAgent(makeSession([], 'D:\\code\\demo')))
   const plain = await callRoute(bare.routes, '/api/memory/status', {})
-  assert.deepEqual(plain.json.roots.map((root) => root.label), [undefined, undefined, undefined])
+  assert.deepEqual(plain.json.roots.map((root) => root.label), [undefined, undefined, undefined, undefined])
 })
 
 await test('memory writes declare the memory root as their sandbox workspace', async () => {

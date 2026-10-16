@@ -48,10 +48,19 @@ import {
 } from '../lib/pipeline/dream.js'
 
 let passed = 0
+/** Cases whose callback returned a promise; awaited before the summary below. */
+const pending = []
 const test = (label, fn) => {
-  fn()
-  passed += 1
-  console.log(`  ok  ${label}`)
+  const result = fn()
+  const finish = () => {
+    passed += 1
+    console.log(`  ok  ${label}`)
+  }
+  // An async callback must not print `ok`, nor let the summary claim it passed,
+  // before it settles: a synchronous helper that ignores the promise reports a
+  // pass for a case that is about to reject.
+  if (result !== undefined && typeof result.then === 'function') pending.push(result.then(finish))
+  else finish()
 }
 
 console.log('dsh-memory model tests')
@@ -555,4 +564,5 @@ test('the scheduler survives a roots resolver that throws', async () => {
   assert.equal(state.lastDream, undefined)
 })
 
+await Promise.all(pending)
 console.log(`\n${passed} model tests passed`)
