@@ -28,6 +28,27 @@
 
 ### 新增
 
+**写入预算整块删除——Qoder 没有这两个字段（2026-10-16）**
+
+- `generation.maxWrites` / `maxWriteBytes` 是本插件自己的"防跑飞"闸门（Qoder 的 SDK 与 qodercli
+  **都没有**这两个字段）。上一版先把默认改成 `0`＝不设上限，用户随后的裁定是**照 Qoder 直接删掉**：
+  字段、schema、面板控件、`/api/memory/write-budget` 路由、`isBudgetEnforced`、
+  四个写入点的字节检查（`memory` 工具的 `write`/`edit`、后台 pass 的 write、日刊、面板的文件路由）、
+  提示词里的 `── port (the budget this deployment enforces)` 段、结果里的 `deferredFiles`、
+  `/memory` 的 `deferred:` 行，**全部移除**。没有兼容层、没有迁移。
+- 行为：模型一轮想写几个就写几个；工具写入不再按字节拒绝；`deferredFiles` 这个字段**本身不存在**
+  （不是空数组）；提示词不再承诺一个不存在的上限。`generation.maxOutputTokens` 不受影响——
+  那是**模型输出**的旋钮，不是写入预算。
+- 顺带删掉一个死导出：`pipeline/dream.js` 的 `dreamPrompt`（只定义、无调用点）。
+- 遗留要说清：schema 对未知键**不严格**，所以旧配置里残留的 `maxWrites` 会被原样带过、
+  **没有任何读者**——这不是兼容层，是"没人读它"。要清就手改 YAML。
+
+验证：`npm test` 17 个套件 / **476 项全绿**（479 → 476：围绕预算的用例被替换或删除）。三条负面对照
+都真红、并已逐条还原：① 让 `applyPlan` 只处理前 2 条写入 ⇒ integration-generation 的六写入用例红
+（点名少掉的 note-2/3）；② 把 `maxWrites: 4` 塞回 `GENERATION_DEFAULTS` ⇒ unit 的「默认里没有这个键」红；
+③ 把写入预算那一行连同词典键加回面板 ⇒ client 的「面板不提供写入预算」红。
+截图与文档（README §4.2/§8.4、`docs/architecture.md`、本文件）已同步。
+
 **注入上限默认改为「不设上限」——照 Qoder 的契约，而不是自造的 2000（2026-10-16）**
 
 - **契约是这样解出来的**（本机 `qodercli@1.1.64` 的 minified bundle）：`consumption.maxTokens` 是**可选**的，

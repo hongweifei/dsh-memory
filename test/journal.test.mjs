@@ -293,25 +293,27 @@ test('no rootId or path is needed for a daily entry, and an unknown target is re
   assert.match(bad.text, /unknown target/)
 })
 
-test('a daily entry counts against the per-pass write budget like any other write', async () => {
-  // It IS a write. Exempting it would make the budget a lie the moment the journal was enabled.
+test('a daily entry is a write like any other — and nothing caps how many', async () => {
+  // The journal used to be counted against `generation.maxWrites`; that field is gone, because Qoder
+  // has no per-pass write cap. Two entries in one pass now both land.
   const fs = makeFs()
-  const config = resolveMemoryConfig({ mode: 'custom', generation: { maxWrites: 1, journal: { enabled: true } } }, {})
+  const config = resolveMemoryConfig({ mode: 'custom', generation: { journal: { enabled: true } } }, {})
   const toolkit = createMemoryToolkit(ctxFor(fs), config, [ROOT], undefined, { id: 'sess1' })
   const first = await toolkit.execute('memory_write', { target: 'daily', content: '- one' })
-  assert.doesNotMatch(first.text, /not attempted/)
+  assert.match(first.text, /wrote/)
   const second = await toolkit.execute('memory_write', { target: 'daily', content: '- two' })
-  assert.match(second.text, /not attempted/)
+  assert.match(second.text, /wrote/)
   const outcome = toolkit.result('')
-  assert.equal(outcome.deferredFiles.length, 1, 'deferred, not failed')
   assert.equal(outcome.status, 'saved')
+  assert.equal('deferredFiles' in outcome, false)
+  assert.equal(outcome.writtenFiles.length, 2)
 })
 
 /* ---- the prompt only teaches the journal when it is on ---- */
 
 test('the prompt carries Qoder\'s journal wording, with the date filled in', () => {
   const at = new Date(2026, 9, 15, 9, 0)
-  const text = autoMemorySystemPrompt([ROOT], '', {}, { enabled: true, scope: 'project', now: at })
+  const text = autoMemorySystemPrompt([ROOT], '', { enabled: true, scope: 'project', now: at })
   // Verbatim lines from the bundle.
   assert.match(text, /\*\*Daily Memory Journal\*\*: After the memory review above/)
   assert.match(text, /Bullet-point list, max 8 bullets, each <=120 chars/)
@@ -326,7 +328,7 @@ test('the prompt carries Qoder\'s journal wording, with the date filled in', () 
 
 test('the journal section is absent while the journal is off', () => {
   // Teaching a tool call the toolkit would refuse is how a prompt promises what the plugin will not do.
-  const off = autoMemorySystemPrompt([ROOT], '', {}, { enabled: false, scope: 'project' })
+  const off = autoMemorySystemPrompt([ROOT], '', { enabled: false, scope: 'project' })
   assert.doesNotMatch(off, /Daily Memory Journal/)
   assert.doesNotMatch(off, /target: "daily"/)
 })

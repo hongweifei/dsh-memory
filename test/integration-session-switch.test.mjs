@@ -938,21 +938,14 @@ await test('the same write SUCCEEDS in `custom` mode, where the plugin accepts i
   apply(makeCtx(makeFs({}), makeLlm('{}')).ctx, loadConfig(persisted))
 })
 
-await test('the status payload publishes the write budget, so the panel can show a control', async () => {
-  // The panel cannot import a Host module, so the budget has to ride on `/status` like `minTokens`
-  // does. Without this the control would read `undefined` and render a zero it never received.
+await test('the status payload publishes no write budget, because there is none', async () => {
+  // `maxWrites` / `maxWriteBytes` were the plugin's own knobs and are gone (Qoder has neither field).
+  // A panel cannot show a control for a value the Host does not have, and a stale key on the payload
+  // would make the client render one that writes a configuration the plugin ignores.
   const { routes } = switchFixture()
   const { json } = await callRoute(routes, '/api/memory/status')
-  // The defaults: `0` = no limit. Published as NUMBERS, not strings, so the panel's dirty-check
-  // compares like with like.
-  assert.equal(json.maxWrites, 0)
-  assert.equal(json.maxWriteBytes, 0)
-
-  // And a configured budget is published as configured.
-  const configured = switchFixture({ config: { generation: { maxWrites: 7, maxWriteBytes: 4096 } } })
-  const published = await callRoute(configured.routes, '/api/memory/status')
-  assert.equal(published.json.maxWrites, 7)
-  assert.equal(published.json.maxWriteBytes, 4096)
+  assert.equal('maxWrites' in json, false)
+  assert.equal('maxWriteBytes' in json, false)
 })
 
 await test('the generation route carries the daily-journal switch with the other two', async () => {
@@ -1118,55 +1111,15 @@ await test('the status payload publishes both policy switches and which env var 
   assert.equal(free.dreamEnabled, true)
 })
 
-await test('the write-budget route sets both limits, and `0` means no limit', async () => {
-  // The two write budgets are now panel-editable, and BOTH default to `0` = no limit (they do not
-  // exist in Qoder, so there is nothing to align a cap to). `0` therefore has to survive the route:
-  // a control whose zero silently becomes "refuse everything" would be the worst kind of setting.
-  const fs = makeFs({})
-  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
-  apply(ctx, loadConfig({ mode: 'custom', generation: { turnComplete: { enabled: false } } }))
-  let persisted = { mode: 'custom', userScope: true, projectScope: true }
-  services.set('configEditor', {
-    entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
-    edit: async (entry, change) => { persisted = change(persisted, {}) },
-  })
+await test('there is no write-budget route any more, and no size can refuse a write', async () => {
+  // The route existed only to write `generation.maxWrites` / `maxWriteBytes`, which are gone (Qoder
+  // has neither field). A leftover route would let the panel write configuration nothing reads.
+  const fixture = switchFixture()
+  assert.equal(fixture.routes.has('/api/memory/write-budget'), false, 'the route must be unregistered')
 
-  const set = await callRoute(routes, '/api/memory/write-budget', { method: 'POST', body: { maxWrites: 8, maxWriteBytes: 32768 } })
-  assert.equal(set.status, 200, JSON.stringify(set.json))
-  assert.deepEqual(set.json, { ok: true, maxWrites: 8, maxWriteBytes: 32768 })
-  assert.deepEqual(persisted.generation, { maxWrites: 8, maxWriteBytes: 32768 })
-
-  // A form sends strings; digits-only is accepted and reported as the number.
-  const strings = await callRoute(routes, '/api/memory/write-budget', { method: 'POST', body: { maxWrites: '6', maxWriteBytes: '1024' } })
-  assert.equal(strings.status, 200)
-  assert.equal(strings.json.maxWrites, 6)
-  assert.equal(persisted.generation.maxWrites, 6)
-
-  // Back to unlimited — the default — through the same route.
-  const unlimited = await callRoute(routes, '/api/memory/write-budget', { method: 'POST', body: { maxWrites: 0, maxWriteBytes: 0 } })
-  assert.equal(unlimited.status, 200)
-  assert.deepEqual(persisted.generation, { maxWrites: 0, maxWriteBytes: 0 })
-  // And the plugin still writes with no limit in force — nothing is refused for being "over 0".
-  const tool = makeCtx(fs, makeLlm('{}'))
-  apply(tool.ctx, trustConfig({ generation: { maxWrites: 0, maxWriteBytes: 0 } }))
-  const wrote = await runTool(tool.tools, makeAgent(makeSession([], 'C:\\proj')), { action: 'write', path: 'big.md', content: 'x'.repeat(20000) })
-  assert.equal(wrote.ok, true, 'an unlimited budget must not refuse a large write')
-})
-
-await test('the write-budget route refuses a non-integer, a negative and an empty body', async () => {
-  const fs = makeFs({})
-  const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
-  apply(ctx, loadConfig({ mode: 'custom', generation: { turnComplete: { enabled: false } } }))
-  let edits = 0
-  services.set('configEditor', {
-    entries: () => [{ options: { id: 'memory', name: '@dsh-external/dsh-memory' } }],
-    edit: async (entry, change) => { edits += 1; change({ mode: 'custom' }, {}) },
-  })
-  for (const body of [{ maxWrites: -1 }, { maxWrites: 1.5 }, { maxWrites: 'x' }, { maxWrites: '' }, { maxWrites: true }, {}]) {
-    const response = await callRoute(routes, '/api/memory/write-budget', { method: 'POST', body })
-    assert.equal(response.status, 400, `${JSON.stringify(body)} must be refused`)
-  }
-  assert.equal(edits, 0, 'a refused request must never reach the writer')
+  // And nothing refuses a write for being large: there is no limit to hit.
+  const wrote = await runTool(fixture.tools, fixture.agent, { action: 'write', path: 'big.md', content: 'x'.repeat(20000) })
+  assert.equal(wrote.ok, true)
 })
 
 await test('the mode route switches, and switching TO native reports what it removed', async () => {

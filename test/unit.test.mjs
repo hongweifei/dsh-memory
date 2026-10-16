@@ -163,18 +163,22 @@ test('resolveMemoryConfig keeps explicit values over defaults', () => {
   )
   assert.equal(resolved.generation.prompt, 'only deploys')
   assert.equal(resolved.consumption.maxTokens, 500)
-  // Both write budgets default to 0 = NO LIMIT. Neither field exists in Qoder (nor in the SDK), so a
-  // self-imposed cap is one this port should not invent — and it is a free choice either way.
-  assert.equal(resolved.generation.maxWrites, 0)
-  assert.equal(resolved.generation.maxWriteBytes, 0)
 })
 
-test('an explicit write budget still wins over the unlimited default', () => {
-  // The default is permissive, so the test that matters is that a configured value is HONOURED —
-  // otherwise "defaults to no limit" could quietly become "always no limit".
-  const resolved = resolveMemoryConfig(accepted({ mode: 'custom', generation: { maxWrites: 4, maxWriteBytes: 16384 } }))
-  assert.equal(resolved.generation.maxWrites, 4)
-  assert.equal(resolved.generation.maxWriteBytes, 16384)
+test('there is no write budget at all — Qoder has neither field', () => {
+  // `maxWrites` / `maxWriteBytes` were this port's own runaway guard, removed because Qoder's SDK and
+  // CLI have no such field. Nothing may reintroduce a default: an ignored key that no reader consults
+  // is exactly the kind of leftover the removal is supposed to delete.
+  const resolved = resolveMemoryConfig(accepted({ mode: 'custom' }))
+  assert.equal('maxWrites' in resolved.generation, false)
+  assert.equal('maxWriteBytes' in resolved.generation, false)
+  // A configuration that still carries them gets them passed through — and NOTHING reads them: the
+  // schema is not strict about extra keys, so "the key is gone from the code" is the guarantee here,
+  // not "the schema refuses it".
+  const legacy = resolveMemoryConfig(
+    accepted({ mode: 'custom', generation: { maxWrites: 4, maxWriteBytes: 16384 } }),
+  )
+  assert.equal(legacy.generation.maxWrites, 4, 'a stale key is passed through, not read')
 })
 
 test('mode rejects an unknown value', () => {
@@ -1586,13 +1590,12 @@ test('pruneForNative removes exactly what native refuses, and reports it', () =>
     mode: 'custom',
     userScope: true,
     projectScope: true,
-    generation: { prompt: 'x', onResult: () => {}, turnComplete: { enabled: true }, maxWrites: 4 },
+    generation: { prompt: 'x', onResult: () => {}, turnComplete: { enabled: true } },
     consumption: { maxTokens: 2000, onResult: () => {} },
   }
   const { config: pruned, dropped } = pruneForNative(config)
   assert.deepEqual(dropped.sort(), [
     'consumption.maxTokens',
-    'generation.maxWrites',
     'generation.prompt',
     'generation.turnComplete',
   ])

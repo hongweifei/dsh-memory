@@ -236,21 +236,19 @@ await test('an edit that lost a race is REFUSED, not applied over somebody else�
   assert.equal(fs.files.get(path), 'somebody else wrote this\n', 'the other writer’s change survives')
 })
 
-await test('an edit cannot grow a file past maxWriteBytes', async () => {
-  // The bound `write` enforces, enforced on the RESULT and checked before persisting: a tool that
-  // could grow a memory file without limit while `write` refuses to is a hole, not a convenience.
+await test('an edit may grow a file freely — there is no byte cap to hit', async () => {
+  // `generation.maxWriteBytes` was this port's own per-file ceiling and is gone (Qoder has no such
+  // field), so the same edit that used to be refused now simply applies. What remains is the
+  // compare-and-swap: the edit is still computed against the version it read.
   const path = `${HOME}\\projects\\--C-proj--\\memory\\NOTE.md`
   const fs = makeFs({ [path]: 'small\n' })
   const { ctx, tools } = makeCtx(fs, makeLlm('{}'))
-  // `trustConfig` is the fixture that resolves BOTH built-in scopes; override only the bound, since
-  // replacing `generation` wholesale would drop the `turnComplete` switch this config needs.
-  apply(ctx, trustConfig({ generation: { maxWriteBytes: 64 } }))
+  apply(ctx, trustConfig())
   const agent = makeAgent(makeSession([], 'C:\\proj'))
 
-  const grown = await runTool(tools, agent, { action: 'edit', path: 'NOTE.md', old_string: 'small', new_string: 'x'.repeat(200) })
-  assert.equal(grown.ok, false)
-  assert.match(grown.message, /maxWriteBytes 64/)
-  assert.equal(fs.files.get(path), 'small\n', 'the refusal must not have written anything')
+  const grown = await runTool(tools, agent, { action: 'edit', path: 'NOTE.md', old_string: 'small', new_string: 'x'.repeat(2000) })
+  assert.equal(grown.ok, true)
+  assert.equal(fs.files.get(path), `${'x'.repeat(2000)}\n`, 'the whole edit landed')
 })
 
 await test('a muted session cannot edit, and the refusal says why', async () => {

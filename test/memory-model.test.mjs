@@ -388,25 +388,21 @@ test('the consolidation prompt keeps Qoder\'s phases and budget', () => {
   assert.match(prompt, /Do not exhaustively read transcripts/)
 })
 
-test('the prompt states the write budget the toolkit enforces', () => {
-  // Reported live: a pass asked for a fifth file, the toolkit stopped it at four, and nothing
-  // in the prompt had ever said four. A limit the model is not told about is a trap.
-  const budget = { maxWrites: 4, maxWriteBytes: 16384 }
-  const prompt = autoMemorySystemPrompt([{ id: 'user', path: 'C:\\u', access: 'read-write' }], '', budget)
-  assert.match(prompt, /at most 4 files per pass across every scope \(the index counts as one of them\)/)
-  assert.match(prompt, /at most 16384 bytes per file/)
-  assert.match(prompt, /A write past the budget is not attempted/)
-
-  // The consolidation pass enforces the same budget, so it is taught the same numbers.
-  const dream = dreamSystemPrompt([{ id: 'user', path: 'C:\\u', indexFile: 'MEMORY.md' }], budget)
-  assert.match(dream, /at most 4 files per pass across every scope/)
-
-  // `0 = no cap` is this port's convention for these knobs; there is then nothing to teach.
-  const uncapped = autoMemorySystemPrompt([{ id: 'user', path: 'C:\\u', access: 'read-write' }], '', {
-    maxWrites: 0,
-    maxWriteBytes: 0,
-  })
-  assert.doesNotMatch(uncapped, /budget this deployment enforces/)
+test('neither prompt states a write budget — there is none to state', () => {
+  // `maxWrites` / `maxWriteBytes` are gone (Qoder has neither), so the prompt must not promise a cap
+  // the toolkit no longer enforces: teaching a limit that does not exist is the same class of lie as
+  // enforcing one the prompt never mentioned.
+  const prompt = autoMemorySystemPrompt([{ id: 'user', path: 'C:\\u', access: 'read-write' }], '')
+  assert.doesNotMatch(prompt, /budget this deployment enforces/)
+  assert.doesNotMatch(prompt, /at most \d+ files per pass/)
+  assert.doesNotMatch(prompt, /bytes per file/)
+  const dream = dreamSystemPrompt([{ id: 'user', path: 'C:\\u', indexFile: 'MEMORY.md' }])
+  assert.doesNotMatch(dream, /budget this deployment enforces/)
+  assert.doesNotMatch(dream, /at most \d+ files per pass/)
+  // The dream prompt's own "Operating Budget" section is Qoder's wording about tool ROUNDS, not a
+  // write cap, and it stays.
+  assert.match(dream, /## Operating Budget/)
+  assert.match(dream, /Spend no more than a few tool rounds orienting/)
 })
 
 test('the consolidation prompt tells the model that pruning means deleting', () => {

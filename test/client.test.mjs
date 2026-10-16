@@ -225,11 +225,8 @@ const STATUS = {
   // The plugin modes a control may offer, and whether the cap is writable here. Both are Host facts:
   // `consumptionWritable` is false in `native`, where the SDK refuses every consumption override.
   modeChoices: ['native', 'custom'],
-  // The WRITE budget as the Host reports it: `0` = no limit, which is the default for both. A fixture
-  // that omitted these rendered "undefined" and read like a product bug — the trap this file's other
-  // comment warns about, so they are stated rather than left out.
-  maxWrites: 0,
-  maxWriteBytes: 0,
+  // (There is no write budget on the payload: `maxWrites` / `maxWriteBytes` were removed, so a fixture
+  // that still carried them would be testing a control the Host does not have.)
   // Which of the two policy switches an environment variable overrides. Empty here, so both are
   // editable. The real route always sends an array.
   envPinned: [],
@@ -578,33 +575,18 @@ await test('the injected block WRAPS instead of clipping long lines', async () =
   assert.match(text, /\.dshmem-pre\{[^}]*overflow-wrap:break-word/, 'and must break an unbroken path')
 })
 
-await test('the panel offers the WRITE budget, and says "no limit" instead of a bare 0', async () => {
-  // The write budgets default to `0` = NO LIMIT. A bare `0` in a row labelled with a number reads as
-  // the strictest possible setting when it is in fact the loosest, so the read-only form says it in
-  // words — and the hint teaches what 0 means, because a control whose zero means "unlimited" is a
-  // trap otherwise.
+await test('the panel offers no write budget at all', async () => {
+  // `maxWrites` / `maxWriteBytes` were the plugin's own knobs and are gone (Qoder has no such field),
+  // so there is nothing for the panel to show or save. This is the negative control for the removal:
+  // a leftover row would render a control whose writes the plugin ignores.
   const { text, json } = await renderWithStatus(STATUS)
-  assert.match(text, /Write budget/)
-  // Both fields are LABELLED, not two anonymous number boxes: "0 = unlimited" is useless if you cannot
-  // tell which box is files and which is bytes.
-  assert.match(text, /Files per pass/)
-  assert.match(text, /Bytes per file/)
-  assert.match(text, /0 = no limit \(the default\)/)
-  // Two editable number inputs, both with the floor at 0 — `0` is LEGAL here, unlike the injection cap,
-  // whose floor is 1. Asserted on the render tree (which carries props), because `collectText` emits
-  // tag names only and would match nothing.
-  const numbers = [...json.matchAll(/"min":0/g)]
-  assert.equal(numbers.length, 2, `both write-budget fields must accept 0: ${numbers.length}`)
+  assert.doesNotMatch(text, /Write budget/)
+  assert.doesNotMatch(text, /Files per pass/)
+  assert.doesNotMatch(text, /no limit \(the default\)/)
+  // The SERVER tolerance guard (`min: 0`) existed only for those two fields; the injection cap's floor
+  // is 1, so no input anywhere may accept 0.
+  assert.doesNotMatch(json, /"min":0/)
   assert.doesNotMatch(text, /undefined/)
-})
-
-await test('the panel reports the write budget read-only where the plugin would refuse the write', async () => {
-  // `generation.*` is refused in `mode: native` exactly like the injection cap, so the control must
-  // not be offered there — and the values must still be REPORTED, with 0 spelled out.
-  const { json, text } = await renderWithStatus({ ...STATUS, consumptionWritable: false, maxWrites: 0, maxWriteBytes: 16384 })
-  assert.doesNotMatch(json, /aria-label|Files per pass/, 'the editable fields must not be offered')
-  assert.match(text, /no limit/, 'the 0 budget is reported as "no limit"')
-  assert.match(text, /16384/, 'and a real limit is reported as its number')
 })
 
 await test('the panel offers the two policy switches, and reports an env-pinned one', async () => {
@@ -811,8 +793,9 @@ await test('the cap control writes a number, and an EMPTY box clears it — null
     await Promise.resolve()
   })
 
-  // The cap's own input, addressed by CLASS: the write-budget row has two more number inputs, so a
-  // positional lookup would silently edit a different field (a trap this suite has hit twice before).
+  // The cap's own input, addressed by CLASS: it is the only number input on the panel now that the
+  // write-budget row is gone, and a positional lookup would silently edit a different field if another
+  // one is ever added (a trap this suite has hit twice before).
   const find = () => renderer.root.findAll((node) => node.type === 'input' && String(node.props.className).includes('dshmem-number'))[0]
   assert.equal(find().props.value, '2000', 'the persisted cap is what the box shows')
 
@@ -1454,7 +1437,7 @@ await test('a failed generation explains itself instead of just saying "failed"'
       status: 'failed',
       turnIndex: 3,
       writtenFiles: [],
-      failedFiles: [{ rootId: 'user', path: 'MEMORY.md', error: 'content exceeds maxWriteBytes 16384' }],
+      failedFiles: [{ rootId: 'user', path: 'MEMORY.md', error: 'file access denied under workspace-write mode' }],
       reason: 'every write was refused',
     },
   }
@@ -1462,7 +1445,7 @@ await test('a failed generation explains itself instead of just saying "failed"'
   assert.match(text, /failed/, 'the status itself still shows')
   assert.match(text, /every write was refused/, 'the reason must reach the activity row')
   assert.match(text, /Refused to write MEMORY\.md/, 'the refused write must be listed')
-  assert.match(text, /content exceeds maxWriteBytes 16384/, 'and the refusal must say why')
+  assert.match(text, /file access denied under workspace-write mode/, 'and the refusal must say why')
   // A skip explains itself too: that is the other status a bare word cannot convey.
   const skipped = { ...STATUS, lastGeneration: { status: 'skipped', turnIndex: 2, writtenFiles: [], failedFiles: [], reason: 'prompt shorter than 40 characters' } }
   const short = await renderWithStatus(skipped, 'en')
@@ -1721,12 +1704,12 @@ await test('no user-visible string is hardcoded in the component body', () => {
 })
 
 await test('the panel talks only to the /api/memory routes', () => {
-  // `[a-z-]+`, not `[a-z]+`: a hyphenated path like `/api/memory/write-budget` was silently truncated
-  // to `/api/memory/write` and reported as an unknown route — the guard was right to fire, but on its
-  // own truncation rather than on a stray path.
+  // `[a-z-]+`, not `[a-z]+`: a hyphenated path (e.g. the old `/api/memory/write-budget`) was silently
+  // truncated to `/api/memory/write` and reported as an unknown route — the guard was right to fire,
+  // but on its own truncation rather than on a stray path.
   const paths = [...source.matchAll(/['"](\/api\/memory\/[a-z-]+)/g)].map((match) => match[1])
   assert.ok(paths.length > 0)
-  const known = ['/api/memory/status', '/api/memory/file', '/api/memory/preview', '/api/memory/refresh', '/api/memory/flush', '/api/memory/trust', '/api/memory/switch', '/api/memory/budget', '/api/memory/scope', '/api/memory/mode', '/api/memory/write-budget', '/api/memory/generation']
+  const known = ['/api/memory/status', '/api/memory/file', '/api/memory/preview', '/api/memory/refresh', '/api/memory/flush', '/api/memory/trust', '/api/memory/switch', '/api/memory/budget', '/api/memory/scope', '/api/memory/mode', '/api/memory/generation']
   for (const path of paths) {
     assert.ok(known.includes(path), `unexpected route ${path}`)
   }
