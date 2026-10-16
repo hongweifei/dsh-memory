@@ -21,8 +21,8 @@ import {
   isIndexFile,
   parseMemoryFile,
   serializeMemoryFile,
-} from '../lib/memory-file.js'
-import { TRUNCATED_INDEX_NOTICE } from '../lib/constants.js'
+} from '../lib/memory/memory-file.js'
+import { TRUNCATED_INDEX_NOTICE } from '../lib/core/constants.js'
 import {
   INDEX_SECTION,
   INDEX_SECTION_UNKNOWN_LINE_LIMIT,
@@ -34,8 +34,8 @@ import {
   autoMemorySystemPrompt,
   dreamSystemPrompt,
   scopeSection,
-} from '../lib/memory-prompt.js'
-import { projectKey, projectMemoryDir, userMemoryDir, resolveDshHome } from '../lib/paths.js'
+} from '../lib/memory/memory-prompt.js'
+import { projectKey, projectMemoryDir, userMemoryDir, resolveDshHome } from '../lib/core/paths.js'
 import {
   DREAM_LOCK_FILE,
   DREAM_LOCK_STALE_MS,
@@ -45,7 +45,7 @@ import {
   dreamLockPath,
   dreamStatePath,
   parseDreamLock,
-} from '../lib/dream.js'
+} from '../lib/pipeline/dream.js'
 
 let passed = 0
 const test = (label, fn) => {

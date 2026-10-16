@@ -14,8 +14,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { resolveMemoryConfig } from '../lib/config.js'
-import { listRootFiles } from '../lib/fs.js'
+import { resolveMemoryConfig } from '../lib/config/config.js'
+import { listRootFiles } from '../lib/core/fs.js'
 import {
   JOURNAL_BULLET_CHARS,
   JOURNAL_DIR,
@@ -25,10 +25,10 @@ import {
   journalHasEntryFor,
   journalRelativePath,
   journalWarnings,
-} from '../lib/journal.js'
-import { autoMemorySystemPrompt } from '../lib/memory-prompt.js'
-import { createMemoryToolkit } from '../lib/memory-agent.js'
-import { applyJournalEntry } from '../lib/memory-pass.js'
+} from '../lib/memory/journal.js'
+import { autoMemorySystemPrompt } from '../lib/memory/memory-prompt.js'
+import { createMemoryToolkit } from '../lib/pipeline/memory-agent.js'
+import { applyJournalEntry } from '../lib/memory/memory-pass.js'
 
 /** A fake `fs` whose listing is derived from what was actually written.
  *
@@ -255,7 +255,7 @@ test('the journal is INVISIBLE to injection because it is nested', async () => {
   // so the journal is invisible to them too. That is a trade, not an oversight — the journal is a log
   // for a human, not retrievable memory — and it must not be "fixed" by moving the file to the root,
   // which would put a month of days into every injection.
-  const { searchMemory } = await import('../lib/memory-search.js')
+  const { searchMemory } = await import('../lib/memory/memory-search.js')
   const found = await searchMemory(ctx, [ROOT], 'a day', {}, undefined)
   assert.equal(found.hits.length, 0, 'search does not reach the journal')
   // Positive control: the SAME search DOES reach the top-level file, so the zero above is the filter
@@ -341,7 +341,7 @@ test('the journal is a generation.* key, so native mode prunes it like the rest'
   // The `native` gate is not special-cased anywhere: `pruneForNative` walks the block, so a new key is
   // covered by construction. This pins that, because the day it stops being true the panel would
   // offer a control whose write makes the plugin fail to activate.
-  const { pruneForNative } = await import('../lib/config-rules.js')
+  const { pruneForNative } = await import('../lib/config/config-rules.js')
   const pruned = pruneForNative({ mode: 'custom', generation: { journal: { enabled: true }, onResult: () => {} } })
   assert.deepEqual(pruned.dropped, ['generation.journal'])
   assert.equal('journal' in (pruned.config.generation ?? {}), false)

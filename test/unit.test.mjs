@@ -7,12 +7,12 @@ import { existsSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { deleteGuarded, memoryGuard, readVersioned } from '../lib/fs.js'
-import { FAILURE_PAUSE_DEFAULT, advanceFailurePause, pausedOutcome, resumePaused } from '../lib/failure-pause.js'
-import { collectTouchedPaths, isJitActive, jitDecision, parseJitTrigger } from '../lib/jit.js'
-import { indexWarnings } from '../lib/memory-file.js'
-import { applyEdit } from '../lib/memory-edit.js'
-import { GLOBAL_CONSEQUENCE, MODE_CONSEQUENCE } from '../lib/commands-report.js'
+import { deleteGuarded, memoryGuard, readVersioned } from '../lib/core/fs.js'
+import { FAILURE_PAUSE_DEFAULT, advanceFailurePause, pausedOutcome, resumePaused } from '../lib/memory/failure-pause.js'
+import { collectTouchedPaths, isJitActive, jitDecision, parseJitTrigger } from '../lib/memory/jit.js'
+import { indexWarnings } from '../lib/memory/memory-file.js'
+import { applyEdit } from '../lib/memory/memory-edit.js'
+import { GLOBAL_CONSEQUENCE, MODE_CONSEQUENCE } from '../lib/memory/commands-report.js'
 import {
   Config,
   estimateMessage,

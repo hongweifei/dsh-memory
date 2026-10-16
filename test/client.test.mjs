@@ -1127,7 +1127,7 @@ await test('every composer state has its own dot colour', async () => {
   //
   // Read the CSS out of a REAL render rather than the source text: the stylesheet is a JS string
   // with escaped quotes, so a source-level regex can miss the very rules a browser would apply.
-  const { SESSION_MODES } = await import('../lib/memory-switch.js')
+  const { SESSION_MODES } = await import('../lib/session/memory-switch.js')
   const { renderer } = await renderComposer(TOGGLE, 'en', { keep: true })
   const style = renderer.root.findAll((node) => node.type === 'style')[0]
   const css = String(style.children.join(''))
@@ -1163,7 +1163,7 @@ await test('the composer’s offline cycle matches the modes the Host publishes'
   // The button has a built-in cycle for the moment before the first read lands. If it disagreed with
   // `SESSION_MODES`, a user could click a state this build does not implement — and the request would
   // be refused only after the poll arrived. Pin the two lists to each other.
-  const { SESSION_MODES } = await import('../lib/memory-switch.js')
+  const { SESSION_MODES } = await import('../lib/session/memory-switch.js')
   const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
   const match = source.match(/var fallback = \[([^\]]*)\]/)
   assert.ok(match, 'the composer control must keep a fallback cycle')

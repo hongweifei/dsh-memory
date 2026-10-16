@@ -9,8 +9,8 @@
  */
 import assert from 'node:assert/strict'
 
-import { createMemoryToolkit, memoryToolSchemas, runMemoryAgent, MAX_AGENT_ROUNDS } from '../lib/memory-agent.js'
-import { perPassBudgetNote } from '../lib/memory-pass.js'
+import { createMemoryToolkit, memoryToolSchemas, runMemoryAgent, MAX_AGENT_ROUNDS } from '../lib/pipeline/memory-agent.js'
+import { perPassBudgetNote } from '../lib/memory/memory-pass.js'
 
 let passed = 0
 const test = async (label, fn) => {
