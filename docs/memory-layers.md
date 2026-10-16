@@ -3,7 +3,7 @@
 > 这份文档回答一个问题：`MemoryContextManager` 里那些还没对齐的字段，
 > **哪些该由本插件实现，哪些已经由 DeepSeek Harness 负责**。
 > 结论写在最后一节；中间是证据，全部来自安装的 `qodercli` bundle 解码
-> （`node test/inspect-qodercli.mjs --find …`），不是从 SDK 文档推测的。
+> （`node tools/inspect-qodercli.mjs --find …`），不是从 SDK 文档推测的。
 
 ## 1. Qoder 的字段与它们的真实来源
 

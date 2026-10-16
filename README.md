@@ -1,19 +1,25 @@
 # dsh-memory
 
-按 **Qoder Agent SDK 的记忆契约**为 DeepSeek Harness 实现的持久记忆插件：一个后台 pass 决定什么值得记并将其写进记忆文件，一个有预算的 pass 把记忆装进 Agent 上下文。
+按 **Qoder Agent SDK 的记忆契约**为 DeepSeek Harness 实现的持久记忆插件：后台 pass 决定什么值得记、
+把它写进记忆文件；每一步再把记忆按 token 预算装进上下文，并且只发「变了的」那部分。
 
 | | |
 |---|---|
-| 版本 | `0.1.0` |
+| 版本 | `0.1.0`（**冻结**：做对齐本身不发布新版本，改动累积） |
 | 包名 | `@dsh-external/dsh-memory` |
-| 依据 | 真实 SDK（`@qoder-ai/qoder-agent-sdk@1.0.50`）**＋**安装的 `qodercli` bundle 解码，不是文档推测 |
-| 测试 | **332 项全绿**（`node test/*.test.mjs`）：unit 95 / integration 112 / model 41 / client 37 / architecture 14 / agent 19 / package-shape 10 / resolveMeta 4 |
-| 依赖 | 仅 `@deepseek-ai/schemastery`（提供真正的 `Config` schema）与 `picomatch`（排除规则；Qoder 自己也是这个库） |
-| 设计文档 | [`docs/qoder-memory-model.md`](docs/qoder-memory-model.md)（解出的记忆模型）、[`docs/memory-layers.md`](docs/memory-layers.md)（哪些层归 harness、哪些归本插件） |
+| 依据 | 真实 SDK（`@qoder-ai/qoder-agent-sdk@1.0.50`）**＋**本机 `qodercli` bundle 解码，不是文档推测 |
+| 测试 | **475 项全绿**（`npm test`，17 个套件）：unit 121 / integration 182（9 个主题套件）/ client 61 / memory-model 41 / memory-agent 19 / journal 20 / architecture 18 / discovery 9（+1 skipped）/ resolveMeta 4 |
+| 依赖 | 仅 `@deepseek-ai/schemastery`（真正的 `Config` schema，**不在公共 npm 上**）与 `picomatch`（排除规则；Qoder 自己也是这个库） |
+| 文档 | [代码结构与开发](docs/architecture.md)（模块放哪、怎么加东西、测试怎么跑）· [Qoder 记忆模型](docs/qoder-memory-model.md)（解出的原件）· [记忆层归属](docs/memory-layers.md)（哪些层归 harness）· [CHANGELOG](CHANGELOG.md)（开发流水与每条修复的反证） |
+
+![设置面板](docs/images/panel-zh.png)
+
+> 截图由 `npm run preview` + `npm run shots` 从**真实的 `lib/client.js`** 渲染（`tools/preview.mjs`），
+> 另外还有英文与暗色两张：`docs/images/panel-en.png`、`docs/images/panel-zh-dark.png`。
 
 ---
 
-## 1. 它做什么
+## 1. 它是什么
 
 与 Qoder 一样，记忆分成**两个可独立配置的半**：
 
@@ -33,15 +39,20 @@
 
 ## 2. 安装
 
-```powershell
-# 在 Harness 会话里用 plugin_manager 安装，target 指到本仓库的绝对路径：
-# action: install_bundle, target: <本仓库路径>
+在 Harness 会话里用 `plugin_manager` 安装，`target` 指到本仓库：
+
+```
+action: install_bundle
+target: <本仓库路径>
 ```
 
 装好后需要**一次 `dsh web` 重启**（host 半在进程启动时加载），之后**刷新页面**即可看到面板
 （client 半每次加载都会重新取）。之后改代码：host 半仍需重启，client 半只需刷新。
 
-### 依赖与重装
+`cordis.patch.yml` 里那行 `insert` 已按包名挂载本插件；**可调项写在你自己 profile 的
+`cordis.patch.yml` 里**（`id: memory` 覆盖），不要改插件自带的 patch——升级会被覆盖。
+
+### 2.1 依赖与重装
 
 ```powershell
 npm install            # react / react-dom / react-test-renderer 只给 client 测试用
@@ -64,9 +75,18 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
 锁文件是 `package-lock.json`。这些包**不进仓库**（见 `.gitignore`）：源码可克隆，
 但完整运行需要上面这一步。
 
-## 3. 配置
+## 3. 快速上手
 
-在 **profile 的** `cordis.patch.yml` 覆盖（不要改插件自带的 patch，升级会被覆盖）：
+1. 按 §2 装好并重启，`Settings → Memory` 能看到面板。
+2. 想改注入上限或写入预算，先把**模式**切成 `custom`（面板第一行就能改，见 §4.2）。
+3. 正常聊几轮，然后 `/memory` 看最近一次生成/消费；不确定记忆有没有进上下文，按面板的「预览」。
+4. 让 agent 主动记东西：主模型有 `memory` 工具（`action: write|edit|...`），见 §8.2。
+
+## 4. 配置参考
+
+### 4.1 完整示例
+
+写在**profile 的** `cordis.patch.yml`：
 
 ```yaml
 - id: memory
@@ -76,7 +96,7 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
     mode: native              # native | custom
     userScope: true           # $DSH_HOME/memory/
     projectScope: true        # $DSH_HOME/projects/<projectKey>/memory/  （不在仓库里）
-    writePolicy: memory-root  # 记忆写入声明的沙箱根；memory-root＝自声明记忆目录，session＝去问当前会话
+    writePolicy: memory-root  # 写入时声明哪个沙箱根：memory-root＝自声明记忆目录，session＝去问当前会话
     projectRootMarkers: []    # 空＝会话 cwd 就是项目（harness 的分组方式）；['.git']＝整个仓库一份记忆
     excludes: []              # gitignore 风格 glob（picomatch），只对项目作用域生效
     #   - '**/*.draft.md'
@@ -90,7 +110,8 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
       enabled: false          # Qoder 的 security.folderTrust.enabled；关＝所有目录都受信任
       folders: []             # 显式信任的目录（绝对路径，或相对会话 cwd）
     generation:
-      maxOutputTokens: 0      # 0＝不给回复设上限，用适配器/模型自己的默认值（见下方说明）
+      enabled: true           # 自动记录的总开关（Qoder 的 auto_memory_policy.enabled；这里默认开）
+      maxOutputTokens: 0      # 0＝不给回复设上限，用适配器/模型自己的默认值（见 §4.2）
       pauseAfterFailures: 3   # 连续失败几次就暂停本会话的生成（Qoder 的 hFl=3）；0＝永不暂停
       maxWrites: 0            # 单轮最多写几个文件（索引也算一个）；0＝不设上限（默认，面板可改）
       maxWriteBytes: 0        # 单文件字节上限；0＝不设上限（默认，面板可改）
@@ -127,107 +148,46 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
 
 `shouldGenerate` 与 `onResult` 用 YAML 的 `!!js` 表达式传入（Loader 会求值成真正的函数）。
 
+### 4.2 语义要点
+
+**`native` 与 `custom`**（照 SDK 的规则）：`native` 下运行时决定记什么、存哪里、何时加载，
+且**拒绝** `generation.*` / `consumption.*` 的覆盖（只放行两个 `onResult` 回调和作用域开关）；
+`custom` 只覆盖你显式给出的部分。**`mode` 的默认值是 `native`，不写就等于 `native`。**
+
+> 被拒绝的配置**不是"没生效"，而是插件根本不激活**——`validateMemoryConfig` 在 `apply()` 里跑，
+> Loader 重新加载时抛错，于是记忆在所有会话里消失。所以：面板在 `native` 下**照实显示这些值但不给控件**，
+> 写入路由**先剪枝再写**（切到 `native` 时把不被接受的项移除，并把剪掉的键列在回复的 `dropped` 里）。
+
 **两个"预算"不要混**：`consumption.maxTokens` 是**注入**预算——每一步最多允许多少 token 的
-**记忆文本**进入上下文。它由 `render.js` 执行"宽处略、细处截"：整份放得下就全注入；
-放不下就**先整文件丢弃**（按加载顺序），只剩一个时才对它做截断（最多 12 次尝试），
-截断的是索引时还会加一条提示。**模型自己的输出**上限是另一个旋钮（`generation.maxOutputTokens`），
-两者互不相干；面板的「注入预算」区把两半并排显示，就是为了不再把这两件事搞混。
+**记忆文本**进入上下文；`render` 执行"宽处略、细处截"：整份放得下就全注入，放不下就**先整文件丢弃**
+（按加载顺序），只剩一个时才对它做截断。**模型自己的输出**上限是另一个旋钮
+（`generation.maxOutputTokens`），两者互不相干。
 
 **上限必须是正整数**：schema 是 `natural().min(1)`、SDK 也要求正整数，所以 `0` 在配置层就被拒绝，
-根本到不了渲染层——尽管 `render.js` 确实处理 `maxTokens <= 0`。**要完全不注入就设
-`consumption.enabled: false`**。这条以前写错过（旧的面板标签和上面那行 YAML 注释都说"0＝不注入"），
-现在两边都改对了，而且那个下限是**一个共享常量**（`CONSUMPTION_MIN_TOKENS`）：schema、`/api/memory/budget`
-路由、面板输入框的 `min` 都读它，所以没有任何界面会给出一个插件随后会拒绝的值。
+根本到不了渲染层。**要完全不注入就设 `consumption.enabled: false`**。那个下限是**一个共享常量**
+（`CONSUMPTION_MIN_TOKENS`）：schema、`/api/memory/budget` 路由、面板输入框的 `min` 都读它。
 
-**这个值可以在面板里直接改**（见 §21）——但**只在 `mode: custom` 下**。
+**`maxOutputTokens` 默认 0**：本插件第一版抄了 Qoder `summarizer-*` 任务类型的 `2e3`，那是给摘要的，
+而 pass 是**用工具调用写文件**的——文件正文就在工具参数里，固定小上限会让推理模型在吐出工具调用之前
+就撞上上限。撞上且那一轮没有可用的工具调用时，pass 会失败并**在原因里说清**；若工具调用已经完整，
+那些写入照常落地再结束循环。
 
-**`native` 与 `custom` 的差别**照 SDK 的规则：`native` 下运行时决定记什么、存哪里、何时加载，
-且**拒绝** `generation.*` / `consumption.*` 的覆盖（只放行两个 `onResult` 回调和作用域开关）；
-`custom` 只覆盖你显式给出的部分。
+**`maxWrites` / `maxWriteBytes` 默认 0＝不设上限**：Qoder 的 SDK 与 qodercli **都没有这两个字段**，
+所以这里没有可对齐的默认值——预设一个 Qoder 根本没有的上限不是"对齐"，是自造约束。
+`0` 的语义在执行层是**一个**判断（`isBudgetEnforced`），四个写入点全部读它；若被当成"上限就是 0 字节"，
+**每一次写入都会被拒**。预算撞线是**延后**（`deferredFiles`，状态仍是 `saved`），不是失败。
 
-**`mode` 的默认值是 `native`**，所以**不写 `mode` 就等于 `native`**。这一点曾经是个严重缺陷：面板不区分模式，
-在 `native` 下也给出可编辑的注入上限；保存写进去的配置被插件自己拒绝，而**被拒绝的配置不是"没生效"**——
-`validateMemoryConfig` 在 `apply()` 里跑，Loader 重新加载时抛错，于是**插件根本没激活，记忆在所有会话里消失**。
-现在有三道闸：
+**`writePolicy` 与文件沙箱**：记忆按契约放在 `$DSH_HOME` 下，也就是**永远在会话工作区之外**。
+harness 的沙箱后端按策略给"变更"上围栏（`read-only` 全部拒绝、`workspace-write` 只允许落在工作区内、
+`danger-full-access` 不设围栏），而**读不受限**。所以本插件默认 `writePolicy: memory-root`：
+**记忆与它自己的存储（信任库、巩固锁与状态）在写入时声明自己的目录作为沙箱根**，写仍被插件自己的
+路径校验限在作用域内，但在 `workspace-write` 会话下照常可用。设成 `session` 则**真的去问当前会话**：
+受限模式下记忆变成**只读**，面板与 `/memory` 会明说。细节与那行面板提示怎么读见 §10.1。
 
-1. **写入前校验**（`judgeConfig`）：候选配置先过**真正的 schema** 和**真正的规则**（就是 `apply()` 用的那两个），
-   不合法就在 `configEditor.edit` 的回调里抛错——那个回调在**落盘之前**运行，所以 profile 保持原样。
-   **必须过 schema**：只看写进去的键会漏掉**默认值**（`mode` 不写就是 `native`），而那正是最常见的形态。
-2. **面板不给假控件**：`/status` 下发 `consumptionWritable`，`native` 下面板**照实显示上限值但不可编辑**，
-   并写明要改就得切到 `mode: custom`。
-3. **状态码说实话**：被插件拒绝是 **400**（调用者的请求），组合写不了配置才是 **501**（部署差异）。
+### 4.3 环境变量覆写
 
-原始缺陷的成因值得记下：**所有写入类测试都用 `mode: custom`**，而用户的 profile 跑 `native`——那条路径从没被测过。
-现在有专门的用例走 `native`，并断言"被拒绝之后插件仍然能激活"。
-
-**模式可以在面板里直接改**（`POST /api/memory/mode`）。这是上面那道闸的必要补充：既然 `native` 下注入上限
-不可编辑，用户就需要一条不必手改 YAML 再重启的出路，而这一项就是它。为了这个，**面板里能改的从两项变成三项**。
-
-**切换是不对称的，面板对此说了实话**：切到 `custom` 什么都不移除（`custom` 接受一切）；切到 `native` 时，
-配置里那些 `native` 不接受的项**必须先拿掉，否则写入会被拒绝**——而"把策略交回给运行时"本来就意味着这件事。
-所以路由**先剪枝再写**（`pruneForNative`），并把剪掉的键**列在回复里**（`dropped`），面板照实显示
-（"为让 native 接受，已移除：generation.prompt, consumption.maxTokens"）。静默丢掉别人的 prompt 才是不可接受的。
-剪枝只动 `generation`/`consumption` 两个块，两个 `onResult` 一律保留（它们是 `native` 唯一放行的覆盖）。
-
-**`!!js` 表达式不会被写坏**：harness 把 `!!js` 存成**原始节点**（`{ __jsExpr }`），"The raw node stays in
-the options, so write-back keeps the form"——运行时**求值用于激活**，但**不替换** `entry.options.config` 里的
-那份。所以 `ConfigEditor.edit` 开头的 `structuredClone` 不会因为函数而抛错，本插件的 `merge`/剪枝也按引用
-拷贝节点，表达式文本原样回写。这条也已用一条单元测试钉住（并断言该形状**可以**被 `structuredClone`，因为
-换成真正的函数就不行了——那会让所有 `!!js` profile 的配置写入全部失效）。
-
-**与 harness 文件沙箱的关系（`writePolicy`）**：记忆按契约放在 `$DSH_HOME` 下，也就是**永远在会话
-工作区之外**。harness 的沙箱后端（`dsh-fs-sandbox` + `dsh-sandbox-policy`）按**策略**给"变更"上围栏：
-
-- `read-only` 拒绝一切写入；`workspace-write` 只允许**规范化后落在工作区内**（或平台临时目录）的目标；
-  `danger-full-access` 不设围栏。
-- **读不受限**（"the mutation fence does not restrict observation"）——所以记忆**一直能加载**，
-  只有写入会失败，报的就是 `file access denied under workspace-write mode`。
-- `writeText`/`editText` 的第 5 个参数是"本次调用的 mode + workspaceRoot"。**省略它并不等于"跟随会话"**：
-  后端只做 `sandboxPolicy ?? ctx.sandboxPolicy.resolve()`，而不带会话的 `resolve()` 回的是**部署默认值**
-  （本部署 `mode: workspace-write`，根是 harness 自己的工作目录）——它**不会自己去找会话**。所以"会话已经
-  是**完全权限**，写记忆却仍被 `workspace-write` 拒绝"是必然的：那次调用**从没问过会话**。要问会话就得像
-  harness 自己的工具那样显式传会话（`resolve(exec.agent === undefined ? {} : { session: exec.agent.session })`）。
-
-因此本插件默认 `writePolicy: memory-root`：**记忆与它自己的存储（信任库、巩固锁与状态）在写入时
-声明自己的目录作为沙箱根**，写仍被插件自己的路径校验限在作用域内，但在 `workspace-write` 会话下
-照常可用。设成 `session` 则**真的去问当前会话**：受限模式下记忆变成**只读**，面板与 `/memory` 会明说
-（`session` 时删除也不再走 `node:fs` 绕过围栏，而是按会话模式直接拒绝）；没有会话可问的定时任务退到
-部署默认值。两者不一致时面板那一行显示两段模式——`memory-root · workspace-write · session read-only`
-——两个数字分开显示，才不会把"完全权限的会话"看成"被围栏的会话"。
-
-**关于 `maxOutputTokens`**：SDK 的 `SerializableMemoryGenerationOptions` 里**没有这个字段**
-（只有 `enabled` / `roots` / `prompt` / `turnComplete`），所以它是本插件自己的旋钮，
-`maxWrites` / `maxWriteBytes` 同理。三者都遵循同一个约定：**0＝不设上限**，而且**三者默认都是 0**。
-`maxOutputTokens` 默认 0，让适配器套用模型自己的默认值——这是唯一对所有模型都成立的选择：pass 是**用工具调用写
-文件**的，文件正文就在工具参数里，固定小上限会让推理模型在吐出工具调用之前就撞上上限（本插件
-第一版抄了 Qoder `summarizer-*` 任务类型的 `2e3`，那适用于摘要，不适用于写作）。要控成本就显式
-设一个值；上限撞上且那一轮没有可用的工具调用时，pass 会失败并**在原因里说清**
-（`generation reached maxOutputTokens…`）；若撞上但工具调用已经完整，那些写入**照常落地**再结束循环。
-
-**单轮写入预算**（`maxWrites` / `maxWriteBytes`）也是本插件自己的旋钮——Qoder 的 SDK 与
-qodercli **都没有这两个字段**，所以这里**没有可对齐的默认值**：既然如此，预设一个 Qoder 根本没有的上限
-就不是"对齐"，而是自造一个约束。**两者默认 0＝不设上限**，要限就自己设。
-
-`0` 的语义在执行层是**一个**判断（`isBudgetEnforced`），四个写入点全部读它：`memory` 工具的
-`write`/`edit`、后台 pass、面板保存路由。这一点必须集中：`0` 若被当成"上限就是 0 字节"，**每一次写入
-都会被拒**——这正是把默认值改成 0 时最容易踩的坑，所以四个点都有测试盯着（反证：去掉任一处判断，
-集成测试立刻红）。
-
-**这两个值现在可以在面板里改**（`POST /api/memory/write-budget`）。控件把 `0` 显示成**"不设上限"**
-而不是一个裸的 0——一个数字标签下面写着 `0`，读起来像是限制得最死，而它其实是最松的。`generation.*`
-和注入上限一样**在 `native` 模式下被拒绝**，所以面板在 `native` 下只报告值、不给控件（否则会写进一个
-插件自己拒绝的配置，而**被拒绝的配置会让插件不激活**）。
-
-**预算撞线是"延后"，不是失败**：第一版**既没在提示里写明，又把撞线记成失败**，于是"一轮写了 4 个、
-第 5 个被拦"在面板上显示成 `写入被拒 status.md：at most 4 files may be written per pass`——一轮
-已经干完的 pass 看起来是坏的。现在两半都补齐：**提示里写明生效的预算**（含"索引也算一个"；不设上限时
-这一段根本不出现），**超出的写入记为 deferred 而不是失败**（`deferredFiles`，状态仍是 `saved`，
-模型会收到"未被尝试：本轮预算已用完，下一轮从索引继续"），`/memory` 用 `deferred:` 单列一行。
-
-### 环境变量覆写
-
-Qoder 用「品牌前缀 + 名字」拼环境变量（`Pr(name) => `${prefix}${name}``），布尔词汇是
-`1/true/yes/on` 与 `0/false/no/off`（去空格、忽略大小写），其他值当**未设置**。本插件沿用同一套词汇，前缀换 `DSH_`：
+Qoder 用「品牌前缀 + 名字」拼环境变量，布尔词汇是 `1/true/yes/on` 与 `0/false/no/off`
+（去空格、忽略大小写），其他值当**未设置**。本插件沿用同一套词汇，前缀换 `DSH_`：
 
 | 变量 | 作用 |
 |---|---|
@@ -235,264 +195,59 @@ Qoder 用「品牌前缀 + 名字」拼环境变量（`Pr(name) => `${prefix}${n
 | `DSH_MEMORY_PROJECT` / `DSH_MEMORY_USER` | 覆写两个作用域开关 |
 | `DSH_MEMORY_DREAM` | 覆写巩固 pass 开关 |
 
-**环境变量优先于配置**，且只有这四个开关能从环境进来。
+**环境变量优先于配置**，且只有这四个开关能从环境进来。被环境固定的开关会在面板里注明
+（按了也不会生效的开关比没有这个开关更糟）。
 
-## 4. 用法
-
-### 模型侧工具（记忆 pass 内部）
-
-`memory_list` / `memory_read` / `memory_search` / **`memory_write`** / **`memory_delete`**——
-全部限定在作用域根内，最多 8 轮（`MAX_AGENT_ROUNDS`）。**只有 `memory_search` 与 Qoder 同名**；
-Qoder 的 `memory` / `memory_get` 在本插件叫 `memory_list` / `memory_read`，提示词里对此有明确说明。
-
-**这一套（后台 pass）没有 `edit`**：它的 `memory_write` 有 `mode: replace | append`，够它自己用。
-`edit` 加在**人类工具 `memory`** 上（见下），因为整份重写的代价是"模型自己把其余每一行都复现一遍"，
-而人（和主模型）改一段时最需要的就是不必重写全文。两套工具面**故意不共用词表**：
-pass 的那套是它自己的闭环，改动它会牵动生成提示词与预算，不在这次范围内。
-
-### 人类工具 `memory`
-
-| 参数 | 值 |
-|---|---|
-| `action` | `list` \| `read` \| `search` \| `write` \| `edit` \| `delete` |
-| `scope` | `user` \| `project`（默认 project；`search` 忽略它，搜全部作用域） |
-| `path` | 作用域根内的相对 `.md` 路径（`../escape.md`、`NOTES.txt` 都被拒绝） |
-| `content` | `write` 时的完整文件内容 |
-| `old_string` / `new_string` / `replace_all` | `edit`：要替换的文本 / 替换成的文本 / 是否替换全部出现 |
-
-**`write` 是整份替换，`edit` 是改一段**（`edit` 是后加的）。记忆文件是散文，模型想改一行却要
-自己把其余每一行都完美复现——这就是"改一处、丢一段"的来源，所以工具描述也改成**推荐用 `edit` 改已有文件**。
-
-`edit` 的语义**照搬 harness 自己的 `edit` 工具**，不是自创一套：`old_string` **必须唯一**（否则拒绝，
-并告诉你出现了几次、以及 `replace_all` 可以放行），替换是**字面量**。字面量这点有实际后果——
-`String.replace` 会把替换文本里的 `$&`、`$1` 当模式展开，而**记忆正文里本来就有代码片段**，
-所以两条路径都用回调形式/`split`+`join` 插入原文（有测试钉住 `$&` 不被展开）。
-
-**`edit` 是一次 compare-and-swap，这是它比 `write` 强的地方**：`editGuarded` 读出正文、算出新正文、
-再用**它读到的那一版**做 `replaceIfVersion`。中途有人改了（你自己、别的会话、后台 pass），**写入被拒**
-并明确告诉你"文件已变，请重读后重试"。`write` 没有这个保护——它在写之前才 stat，所以**模型读完之后**
-发生的改动会被静默覆盖。而且它**不重试**：重试等于拿一份调用者没看过的正文再匹配一次 `old_string`，
-匹配到的可能是完全另一段。编辑后的正文还要过 `maxWriteBytes`，且**在落盘之前**检查——否则"拒绝"本身
-已经改了文件。
-
-### 命令
-
-| 命令 | 作用 |
-|---|---|
-| `/memory` | 状态：作用域、信任判定、最近一次生成/消费、变更与告警明细 |
-| `/memory-switch [auto\|all\|user\|project\|off\|status]` | **会话级**记忆模式（见 §20）：跟随全局 / 用户 + 项目 / 仅用户 / 仅项目 / 关闭 |
-| `/memory-scope [status\|all\|project\|user]` | **全局**作用域（见 §20）：每个 `auto` 会话跟随的那一层，面板里也能改 |
-| `/memory-budget [status\|<tokens>]` | **注入上限**（见 §21）：面板里也能改，两边同一个写入器 |
-| `/memory-trust [allow\|deny\|list] [folder]` | 目录信任（写入 `<DSH_HOME>/trusted-folders.json`） |
-| `/memory-imports [status\|allow\|deny]` | **会话级**外部导入授权（授权后立即重新加载） |
-| `/memory-delete <scope>:<path>` | 删除一个记忆文件 |
-| `/memory-refresh` | 重新加载记忆（外部编辑后手工拉取） |
-| `/memory-resume` | 清除「连续失败暂停」（Qoder 没有恢复路径，这是本插件补的唯一出口） |
-| `/memory-flush` | 等后台写入落盘 |
-
-### 设置面板
-
-面板从上到下的区块顺序：状态行（插件/**模式（可直接编辑）**/生成/消费/**全局作用域（可直接编辑）**/
-巩固/闸门/**信任＋授权按钮**/在飞任务）→ **注入预算区**（注入上限**可直接编辑**，见 §21；写入预算；
-注入预览）→ 活动区（最近生成/巩固 + 告警）→ 编辑器（作用域下拉 + 文件名 + 保存/重载/等待）→
-**作用域区** → 命令提示。
-
-**作用域区放在最底是有意的**（2026-10-15，用户要求「将作用域区放到下面去」）：它是唯一会**无限增长**的
-区块——**每个有记忆的项目一行**——放在控件上方时，会把「打开这个页面本来要改的设置」挤出第一屏。它是
-参考资料，不是操作对象。`client.test.mjs` 有一条**顺序断言**盯着它（其余断言都与顺序无关，所以把它移
-回去不会让任何测试变红——这条测试正是为此存在；已反向验证：移回去即红）。
-
-作用域区的内容：`user` 加**每个有记忆的项目**，**一行一个作用域**，标题写**工作区名字**（如 `EasyGit`，
-来自 `workspaceRegistry`；查不到工作区的项目回退成 `projectKey` 目录名，`user` 作用域本来就没有工作区），
-鼠标悬停显示它被寻址的 slug；每行还有「N 个记忆文件」+ 占用大小（宿主没给就**整段省略**，不显示
-`undefined`、也不用横线占位），文件折叠在行下（`<details>`），展开后每个文件有**打开/删除**。
-中英双语，全部用真实 `--dsw-*` 主题 token。
-
-**面板里能改的六项**：**模式**（`native`/`custom`，§3）、**全局作用域**（§20）、**注入上限**（§21）、
-**写入预算**（§22，每轮文件数 + 单文件字节）和**三个策略开关**（§23，自动记录 + 记忆巩固 + 日刊）。
-六项共用同一个写入器与同一套规则。除了全局作用域和模式，其余四项都是 `generation.*` / `consumption.*`，
-**在 `native` 下会被拒绝**，所以面板在 `native` 下对它们只报告值、不给控件。
-三项都是"改了再点保存"，共用同一个写入器和同一套规则。模式排在最前，因为它决定另外两项**存不存在**——
-`native` 下注入上限就是只读的；有了这一项，"native 用户要改上限"不再需要手改 YAML 再重启。
-
-**注入预览**（§9 补）回答的是"我的记忆到底进没进上下文"，而且给的是**下一步的判定**而不是事后清单：
-点一下「预览」，Host 把真实消费跑一遍再**丢掉结果**，返回四件事——`step.action`
-（`silent` 什么都不注入 / `snapshot` 全量 / `delta` 只发变动 / `none`）、原因、本步 token、
-以及新会话会收到的**完整块正文**（默认折叠在 `<details>` 里）。绝大多数步是 `silent`，
-所以只给"完整块"会教出相反的直觉。
-
-**判定词会翻译，原始代码只进 tooltip**：宿主给的是 `silent`/`snapshot`/… 这种机读码，直接印在中文面板上
-就是本仓库明令禁止的"半英文面板"。四种判定都有中文说法，原始代码连同机器原因一起放进 `title`；
-遇到本面板不认识的判定就**明说不认识**，而不是把那个词原样印出去。
-
-**静音会话的 payload 与别的不同，面板必须按"缺了就是缺了"读它。** 静音会话只回**判定**、**故意不给**
-`snapshot`（跑一遍就会描述一个不会发生的步骤），也不给 `changed`。以前无条件读 `snapshot.maxTokens`
-和 `step.changed.length`，于是**恰好在预览最有用的状态下抛异常**——集成测试覆盖了那个 payload、
-客户端测试覆盖了怎么读它，**两边各测一半、中间那条缝没人测**。现在两处都容缺，并有测试专门喂
-只带 `action`/`reason` 的静音 payload。
-
-**整块正文会换行。** `<pre>` 默认 `white-space: pre`，而记忆是散文加文件路径，长行会跑出右边界、
-从词中间被切掉且无从读到。用 `pre-wrap` + `break-word`。
-
-**为什么这三处能活到被截图发现**：`test/preview.mjs` 渲染的 `<details>` 默认**折叠**，而记忆块就在里面 ——
-**每张提交的截图都只显示一个折叠的三角**，从来没显示过这块面板存在的意义（那段正文）。
-现在序列化器只把**含 `<pre>` 的那一个** disclosure 标 `open`（作用域行仍按静息形态折叠），所以证据
-真的展示内容。**教训：交付用的截图必须展示"要看的东西"，否则它就是一张永远通过的检查。**
-
-**它绝不改变它描述的行为**：不记 `lastConsumption`、不触发 `consumption.onResult`、用一次性的版本
-缓存、**只读不写**那个会话的注入基准。最后一条是硬要求——预览若推进了基准，下一步就会判定"未变"
-而什么都不发，等于看一眼面板就把注入关掉了。`test/integration.test.mjs` 里
-「previewMemory describes the next step without changing it」钉住这条，并且**已验证：把写基准加回去，
-该测试立刻以 `the preview must not have consumed the snapshot` 失败**。
-预览是**按需**的 `GET /api/memory/preview`，不挂在 5 秒一次的 status 轮询上（那会每 5 秒重读整个记忆块）。
-
-**token 数字说快照的整块代价**：`planInjection` 只在 delta 路径设置 `tokens`（那里 delta 的代价与整块
-不同），于是 `snapshot` 过去报 **0** —— 面板一边写"占用 0 / 10000 token"一边在下面展示整块正文，
-数字和它下方的文字自相矛盾。现在快照按整块报。
-
-**"为哪个会话预览"：路由按确定性递减的顺序解析，猜不出来就说不猜。**（这一段是修用户实测缺陷时写的。）
-
-顺序由 **`resolveScopeAgent`** 一处定义（`memory-switch.js`），`/api/memory/preview` 和 `/api/memory/status`
-共用它，所以两个界面不可能对"哪个会话在作用域内"给出不同答案：
-
-1. **`?session=<id>`** —— 调用者点名。知道自己会话的调用者应该用这个，也是唯一"确知"的形式。
-2. **进程内的 initiator** —— 斜杠命令和 `memory` 工具有。
-3. **唯一的顶层活会话** —— 只有**一个**候选时用它。**浏览器请求永远没有 initiator**
-   （`withInitiator` 在生产里只有一个调用点：agent loop 的 driver），所以没有这一条，
-   面板的预览就**永远**说不出用户正在聊的那个会话——而这正是这个按钮的意义。一个候选不是猜：
-   没有别的可能。
-   用的是 **`roots()` 而不是 `list()`**：`list()` **包含子代理**，于是"一个子代理"会被当成
-   "唯一的会话"，预览就会去描述那个**没有人看的**子会话。`roots()` 才是用户打开的那些会话。
-4. **没有** —— 预览回答**全局配置**下的内容（"现在新开会话会收到什么"），并且**明说**这是哪个问题
-   （`scope: 'global'`，面板显示一句说明），不假装读过某个活会话。
-
-**故意不做的**：会话多于一个时枚举活会话挑一个（那段代码在本仓库历史里出现过，已删）。多于一个候选时
-路由无法知道是哪个，为错误的会话编一个答案比报告全局更糟。**点名但已死的会话是 409**，不静默回退——
-预览一个和你要的不一样的会话，正是上面这个顺序要避免的事。
-
-**读可以这样解析，写不行。** `resolveLiveAgent`（严格版：只认点名或 initiator）仍然是**写入**路径用的那个，
-`/api/memory/switch` 的 `session` 依然必需、指到不存在的 id 依然 409。读错一个会话只是显示得不准，
-**写错一个会话会改掉别人的记忆设置**——所以宽松的解析只用在读上，而且写路径的 409 有测试盯着。
-
-**同一个根因还让面板撒过一个谎，并且写错过一个目录。** 三处症状、一个原因（都走 `currentInitiator()`，
-而它在浏览器请求里永远是 `undefined`）：
-
-| 症状 | 后果 |
-|---|---|
-| `/status` 的 `memoryMode` | 永远是 `undefined`，面板渲染成"跟随全局"——**等于告诉一个已被静音的会话它正跟随配置** |
-| `projectFolder` | 回落到 host 自己的 cwd（通常是 harness home，**不是**用户的项目） |
-| 信任按钮的默认目录 | 同上——于是"信任此目录"会**信任 harness home 而不是项目**，这是**写错目标**，不是显示问题 |
-
-现在三者共用 `resolveScopeAgent`（`activeSession` 也改成走它）。真的解析不出来时（打开了多个会话、
-没点名），面板显示**"无法确定（当前打开了多个会话）"**而不是回落到"跟随全局"——不知道就说不知道。
-
-**这个缺陷为什么能活到现在**：`switchFixture` 调了 `setInitiator(agent)`，**喂了生产环境永远没有的东西**，
-所以 4 条预览测试全绿而用户每次按都失败。现在有测试**专门不带 initiator** 走 `/preview`、`/status` 和
-`/api/memory/trust` 三条路由（"the preview route works with NO initiator — the production condition"、
-"`/status` reports a muted session WITHOUT an initiator"、
-"the trust route resolves the SESSION folder with no initiator"），
-以及"只有一个子代理时不许当成打开的会话""多于一个会话时不许猜""点名死会话要 409"。
-
-两个做不到的地方，如实标注：harness 的 `FsInfo` 只有 `version/type/size`、**没有修改时间**，
-所以显示的是**占用大小**而不是"更新于某时"；harness 也**没有"在文件管理器里打开"的能力**
-（曾实现过 `POST /api/memory/reveal` + `subprocess` 打开器，在本机点不开，已按用户要求撤掉）。
-
-## 5. 与 Qoder 的契约映射
-
-| Qoder | 本插件 |
-|---|---|
-| 生成半 / 消费半 | 同构，两个可独立开关的配置块 |
-| 作用域 `user` / `project` | `$DSH_HOME/memory` / `$DSH_HOME/projects/<projectKey>/memory` |
-| `MEMORY.md` 索引 + 内容文件（`type` 四类） | 同构；非法 `type` 回落 `project` |
-| `isTrustedFolder()` | `trust.enabled` + `trust.folders` + `<DSH_HOME>/trusted-folders.json` |
-| 排除规则（picomatch） | 同库同选项，**只作用于项目作用域**（与 Qoder 一致，全局不被过滤） |
-| 大文件策略（`4e4` 字符） | 报告但**仍然加载**（与 Qoder 一致），面板与 `/memory` 都提示 |
-| `@` 导入（`ImportProcessor`） | 同语法/标记/`tree`·`flat`/`maxDepth: 5`；授权=配置 ∨ 项目 ∨ **会话** |
-| 每次请求重建记忆块 | `agent/pre-step` 每步重投影 + 哈希；**未变则静默探测，变了才发增量** |
-| `extractionEveryNTurns` 间隔门 | `generation.incremental.everyTurns`（含两种 bypass，见 §12） |
-| `MOl` 增量转录游标 | `collectTranscript(session, sinceSeq)`（游标只在 pass 真跑过后推进） |
-| `path_glob_match`（just-in-time） | front-matter `paths` ⇒ 只有当会话触及匹配路径才加载 |
-| `AutoDream`（时间闸门 + 锁） | `generation.dream` + `<DSH_HOME>/.consolidate-lock`（Qoder 的文件名与一小时窗口） |
-| 删除记忆 | 模型工具 / `memory` 工具 / `/memory-delete` / 面板删除按钮（见 §13） |
-| `MEMORY_HEADLESS` 等环境变量 | `DSH_MEMORY_*`，同一套布尔词汇，环境优先 |
-
-## 6. 记忆的真实结构
+## 5. 存储布局（`$DSH_HOME`）
 
 ```
 $DSH_HOME/memory/MEMORY.md                      user 作用域索引
 $DSH_HOME/memory/<topic>.md                     user 作用域内容
+$DSH_HOME/memory/journal/<YYYY-MM-DD>.md        日刊（开启时；子目录，不参与注入）
 $DSH_HOME/projects/<projectKey>/memory/...      project 作用域（同一套结构）
-<DSH_HOME>/trusted-folders.json                 信任判定（不是记忆，不会被注入）
-<DSH_HOME>/.consolidate-lock                    巩固锁（不是记忆）
+$DSH_HOME/trusted-folders.json                  目录信任判定（不是记忆，不注入）
+$DSH_HOME/.consolidate-lock                     巩固锁（不是记忆；Qoder 的文件名与一小时窗口）
+$DSH_HOME/dream-state.json                      巩固 pass 的每根上次运行时间（不是记忆）
+$DSH_HOME/memory-off-sessions.json              会话级开关的「偏离」记录（不是记忆）
 ```
 
-内容文件的 front-matter：`name` / `description` / `type`（`user | feedback | project | reference`）。
-目录过滤：`.md`、排除索引本身、排除 `.` 开头。**子目录不算记忆**（平铺文件集，有测试钉住）。
+后三个是**关于会话/插件的状态**，不是记忆：它们在所有记忆根之外，而且是 `.json`
+（根目录只收 `*.md`），所以不会被当成内容读进来。
 
-## 7. 项目工作区身份：按 Harness，不按 Qoder
+## 6. 记忆文件与发现
 
-DSH 用三种不同方式定义"项目"，本插件只借用其中一种：
+### 6.1 内容文件与 front-matter
 
-| 概念 | 归属 | 本插件怎么用 |
-|---|---|---|
-| Workspace 记录（uuid + canonical path，`ctx.workspaceRegistry`） | harness | 读它拿真实路径与标题（`resolveWorkspace`），没有就退回规范化路径 |
-| `projectKey` 目录名（`--D-code-demo--` 形如 `projectKey('D:\code\demo')`） | harness 的 session-persistence | **就是**项目记忆目录名，和 sessions 分组一致 |
-| `.git` marker 向上查找 | `dsh-agent-instructions` | 只在 `projectRootMarkers` 显式配置时用于划分记忆根 |
+内容文件的 front-matter：`name` / `description` / `type`（`user | feedback | project | reference`）
+/ 可选的 `paths`（见 §6.5）。非法或缺失的 `type` 回落到 `project`；没有 front-matter 的文件整份算正文。
 
-`projectKey` 是**有损**的：`-` 与路径分隔符不可区分（`D:\a-b` 与 `D:\a\b` 同名），
-非 ASCII 或空格会变成 `~XXXX` 转义（所以**无法从目录名反推路径**），251 字符处截断且不加 hash。
-**本插件照抄这种有损**，好处是与 harness 自己的 `sessions/` 目录一一对应，用户能对着文件系统读。
-测试用**正向**方向钉住它：读每个 session 头部记录的 `cwd`，重新算出目录名，必须与 harness 建的目录同名。
+### 6.2 索引
 
-## 8. 目录信任门
+`MEMORY.md` 是**索引**：它按行指向内容文件，正文不在里面。写入时会检查"约 25KB"与"单行超过约 200 字符"
+并**报告**（结果、日志与面板都会说），但**从不拒绝**——Qoder 也只在提示词里说。
 
-Qoder 的判定逐字解出：`isTrustedFolder(){return !this.folderTrust || (this.trustedFolder ?? false)}`——
-**默认关（全部信任）**，打开后只有信任的目录能贡献项目记忆。本插件：
+### 6.3 发现管线
 
-- **只在消费/写入路径用同一个门**（`resolveEffectiveRoots`），未信任 ⇒ 项目根**整个消失**，
-  而不是"加载了但不注入"。
-- 面板的信任判定与授权按钮作用于**活动会话所在目录**（`ctx.get('agents')?.currentInitiator?.()`），
-  不是宿主进程 cwd——否则你会对着 harness home 授权。
-- 变化立即生效：记忆每步重投影，所以下一个请求就看到新决定（Qoder 的 `setTrustedFolder` 也是立即刷新）。
-
-## 9. 消费发现管线
-
-不是"列 `.md` + 裁剪"。解出的加载器签名是
-`KNi(cwd, includeDirectories, fileService, isTrustedFolder, filenames, importFormat, fileFilteringOptions, discoveryMaxDirs, boundaryMarkers, scope, agentsMdExcludes)`，
-返回 `{ memoryContent, fileCount, filePaths, largeFiles, failedFiles }` 并发出 `memory-changed`。已实现三件事：
-
-1. **排除**：picomatch 匹配**规范化 + realpath** 两种路径形态，只对项目作用域生效。
+1. **排除**：picomatch 匹配**规范化 + realpath** 两种路径形态，**只对项目作用域生效**（全局不被过滤）。
 2. **大文件**：超过 40 000 字符**标记但仍然加载**（Qoder 是 `{path, characterCount}` 报告，不丢弃）。
 3. **失败可见**：读不了的文件进 `failedFiles`，结果绝不谎报成功。
+4. **每步重投影**（`agent/pre-step`）：每一步重算整块并逐文件哈希。未变 ⇒ **静默**（不注入、
+   不触发 `onResult`）；变了 ⇒ **只发哈希变动的文件**（`form: 'notice'`，带 `Removed:` 行），从不发快照。
+   `blockHash` 与逐文件哈希挂在消息 `source` 上，新进程可以续接比较基准。
+5. **子目录不算记忆**：文件集是**平铺**的（日刊故意落在子目录里，见 §6.6）。
 
-**每步重投影**（`agent/pre-step`）：每一步重算整个块并逐文件哈希。
-- **未变 ⇒ 静默**：不注入、`onResult` 不触发（否则每步都会惊动调用方）。
-- **变了 ⇒ 增量**：只发哈希变动的文件（`form: 'notice'`，带 `Removed:` 行），**从不发快照**。
-- **续接可用**：`blockHash` 与逐文件哈希挂在消息 `source` 上，新进程从落盘消息恢复比较基准。
+### 6.4 `@` 导入
 
-**`sections` 里放的是模型读到的正文，不是占位符**（`form: 'snapshot'` 时）。这不是可选的美化：
-Trajectory 视图不读 `sections`（它渲染 `inputDetail`，也就是整段正文），但 **Chat 视图的
-`snapshot` 形态只渲染 `sections`、完全不渲染 `content`**——`text` 若是空串，那一行在 Chat 里就只剩
-「此快照取代先前快照」加一串文件名，**模型读到 4000 多字符、读者看到 0**，注入恰好在最该能核对的地方
-失去可审计性。宿主自己的生产者都成对写入（`time-context` 的 invariant 甚至断言 `section.text` 必须
-等于模型读到的字节），本插件原先只写空串是错的。
+语法：`@./x.md`、`@../x.md`、`@~/x.md`、`@/abs.md`、`@x.md`（带扩展名）；
+`` `@...` `` 这类**提及**不算导入；**代码围栏里的 `@` 跳过**。
 
-代价是这份文本在落盘消息里存两份（`content` 给模型、`sections` 给渲染）。按本机真实日志实测：203 次
-snapshot 注入、内容合计 88 万字符，占 171 MB 压缩日志的 **0.49%**（未压缩），且重复内容 zstd 之后
-几乎不增加体积；单次上限仍受同一个 `consumption.maxTokens` 约束。
-
-## 10. `@` 导入
-
-语法（逐字）：`@./x.md`、`@../x.md`、`@~/x.md`、`@/abs.md`、`@x.md`（带扩展名）；
-`` `@...` `` 这类**提及**不算导入；**代码围栏里的 `@` 跳过**（`/(`+)([\s\S]*?)\1/g`）。
-展开标记逐字：`<!-- Imported from: X -->` … `<!-- End of import from: X -->`、
+展开标记：`<!-- Imported from: X -->` … `<!-- End of import from: X -->`、
 `<!-- File already processed: X -->`、`<!-- Import blocked: X - outside project root -->`、
 `<!-- Import failed: X - reason -->`；`flat` 格式是 `--- File: path ---` / `--- End of File: path ---`。
-`maxDepth: 5`，**URL 永不跟随**。允许目录＝该文件所属记忆根 ＋ 受信任的项目目录（Qoder 用 `[projectRoot]`，此处更严）。
+`maxDepth: 5`，**URL 永不跟随**。允许目录＝该文件所属记忆根 ＋ 受信任的项目目录；
+授权 = 配置 ∨ 项目 ∨ **会话级一次性授权**（`/memory-imports allow`，授权后立即重新加载）。
 
-## 11. 按需加载（Qoder 的 `jitMemory`）
-
-内容文件可以在 front-matter 声明 glob，于是**只在相关时才进入上下文**：
+### 6.5 按需加载（Qoder 的 `jitMemory`）
 
 ```markdown
 ---
@@ -505,395 +260,16 @@ paths: ["src/**/*.ts"]
 
 | 声明 | 行为 |
 |---|---|
-| 什么都不写 | `always_on`——**与以前完全一样** |
+| 什么都不写 | `always_on`——与不开这个功能完全一样 |
 | `paths: [...]`（或 `globs:`） | `glob`：只有会话**触及**匹配路径才加载 |
 | `trigger: false` | `manual`：永不自动加载，但索引指针仍在、工具仍可读 |
 
-匹配用 `picomatch`（与排除规则同库同选项），"触及"取自 `session.deriveMessages()` 且**只认像路径的 token**
-（散文不会误触发）。被跳过的文件报 `jit_skipped`，面板会说明原因。
+匹配用 `picomatch`（与排除规则同库同选项），"触及"取自 `session.deriveMessages()` 且**只认像路径的
+token**（散文不会误触发）。被跳过的文件报 `jit_skipped`，面板会说明原因。
 
-## 12. 生成：串行、间隔、回合内、游标、失败暂停
+### 6.6 日刊（Qoder 的 Daily Memory Journal）
 
-- **串行**：一个会话同时只有一个 pass；pass 期间完成的回合**合并成一次**跟进
-  （不是并发跑，也不是每轮各跑一次）。这是修过的真实缺陷：并发 pass 会互相覆盖索引。
-- **间隔**：`generation.incremental.everyTurns`（默认 1），逐轮累加、跑过归零。
-  两种 bypass 取自原实现：操作者提供了 `shouldGenerate`；以及**合并后的那次跟进**。
-- **回合内**：`midTurn: true` 时在 `agent/pre-step` 再加一个触发点——**长回合中途也能记**。
-  没有新消息的步骤什么都不做，所以它是廉价的。
-- **转录游标**：`collectTranscript(session, sinceSeq)` 只取上次之后的消息，**只有 pass 真跑了才推进**；
-  游标找不到就退回全量（丢历史比重复送更糟）。间隔 > 1 时它保证被跳过的几轮不丢。
-- **连续失败暂停**（Qoder 的 `hFl = 3`）：原实现按 sink 累计连续失败，到阈值 `paused = true`，
-  之后 `onTurnComplete` 只记一行 `"skipped because service is paused"` 就返回、**不再发起模型调用**；
-  任何一次成功的提取把计数归零。本插件照此实现：只把 `failed` 算作失败（`skipped`/`no_change`/`partial`
-  都算成功并清零），到 `generation.pauseAfterFailures`（默认 3；0＝永不暂停）后本会话的 pass
-  直接记一条 `skipped`，原因写明暂停及其成因（`paused after 3 consecutive failures: …`），
-  面板与 `/memory` 都显示。**唯一补充**：原实现没有恢复路径（`paused` 一置就持续到进程结束），
-  而 DSH 会话活得更久，所以补了 `/memory-resume` 这一个显式出口。
-
-## 13. 删除记忆
-
-harness 的 `fs` 服务**确实没有 delete**（`FileSystem` 抽象类只有 `resolve`/`stat`/`readText`/`listDir`/
-`writeText`/`editText`/`watch`）。但它提供了做对删除所需的那条缝——`processPath(target)`，
-文档原话是 "the canonical absolute path a subprocess in this filesystem's execution world can open"。
-`deleteGuarded` 按这个顺序：
-
-1. `resolve` + `stat` 走 provider，并校验 `expectedVersion`——**只删调用方看过的那个版本**；
-2. provider 自己有 `remove` 就用它（此时什么都绕不过）；
-3. 否则用 provider 自己给的 `processPath` 去 `unlink`——**不是绕过 provider，而是问它要路径**；
-4. 声明 `sandboxMode === 'read-only'` 的后端**直接拒绝**，不偷偷违反。
-
-允许范围与写入**完全同一套**：已知 root、`read-write`、根内相对 `.md`；拒绝会记入 `failedFiles`。
-**四个入口**：模型工具 `memory_delete`、人类工具 `action: "delete"`、`/memory-delete <scope>:<path>`、
-面板每个文件行的删除按钮（只读作用域不显示）。
-
-**如实说明的代价**：插件自己发起的 `node:fs` 调用**不经过**某个 confining 后端的拦截（插件不在那个拦截里运行），
-所以只读后端是**主动拒绝**而不是被强制。
-
-## 14. 提示词：Qoder 的原文与标注
-
-`lib/memory-prompt.js` 是唯一来源，逐段标注来源：
-
-- `── qodercli verbatim` = 解出的原句；
-- `── port` = 解不出的片段（有的从句子中间开始）或本插件补的连接语。
-
-**解不出就标出来，绝不为了让句子通顺而自己填**。两处确认解不出并就地声明：
-索引行数上限（`⟨lines⟩`——它是**运行时插值的 JS 常量**，字符串表里没有）与
-"…under about 25KB" 那句缺失的开头从句。模型测试逐句断言原文**并且**断言这两处标注还在，改写会失败。
-
-## 15. 结构、分层与体积预算
-
-一个包，两个半：host `lib/*.js`（26 个模块）＋ `lib/client.js`（设置面板，浏览器产物只能一个文件）。
-
-```
-0 constants
-1 config · tokens · fs · paths · memory-file
-2 render · memory-pass · memory-prompt · memory-search · imports · excludes · trust · jit · transcript · failure-pause
-3 memory-agent · consumption-plan
-4 consumption · generation · dream
-5 service · tools · routes · commands
-6 index
-```
-
-只许向下、无环，且**只有 `index.js`** 可以引用 presentation 层——`test/architecture.test.mjs` 强制。
-体积：host 模块逻辑 ≤500 行；`index.js` ≤300；`client.js` ≤640 逻辑 **且** ≤220 行内联数据
-（两份词典 + 样式表）。**当前 `client.js` 逻辑 825/830、内联数据 216/260。**
-
-客户端那条线是**防漂移**，不是必须凑合的额度：它拦的是面板悄悄膨胀一倍，不是"要加功能就先删点东西"。
-上一版它卡在 560/560，加全局作用域开关时我据此动过压缩和"少显示一点"的念头——用户的裁定是
-**不用为一行数自我设限**，所以上限调到当前形状之上（644），而不是把功能砍到线上。host 的 500 行仍然
-有牙齿：`routes.js` 撞线时把配置路由拆成 `config-route.js`，`index.js` 撞线时压缩了接线。
-
-`consumption-plan.js` 单独存在是有原因的：面板要能回答「下一步会注入什么」而**不真的回答它**。
-决策被写成纯函数（`baselineFor` / `planInjection`），两个调用方只差一件事——真实投影**应用并记录**
-结果，面板预览**只读不写**。每个会话的注入基准也放在这里（`readConsumptionState` / `writeConsumptionState`），
-读写分开就是那道闸：只有真实投影会写。
-
-## 16. 测试与验证
-
-```powershell
-node test/unit.test.mjs          # 纯函数
-node test/integration.test.mjs    # 用 fs/llm/listeners 替身跑整条链路
-node test/memory-model.test.mjs   # 逐句断言提示词原文 + 真实的 projectKey 对照
-node test/memory-agent.test.mjs   # 工具循环
-node test/client.test.mjs         # 面板（React 渲染 + 样式表断言）
-node test/architecture.test.mjs   # 分层、体积、路由字面量一致
-node test/discovery.test.mjs      # 版本冻结、包形状
-node test/resolve-meta.test.mjs   # meta 与 locale 一致
-node test/harness-env.mjs         # 不是测试：定位 harness 与安装位置的公共助手
-```
-
-**环境相关的东西一律自动发现，不写死路径。** harness 会把 `DSH_HOME` / `DSH_PROFILE_DIR`
-导进每个会话，`test/harness-env.mjs` 用它定位已安装的 harness 与本插件；找不到时，
-那几条**依赖安装或会话存储**的检查会自己报 `--  (skipped: …)` 而不是失败（也不假装通过），
-所以纯克隆的仓库仍能跑其余全部检查，只是总数比上面的 317 少几条。
-
-方法上的三条硬规矩：
-
-1. **改完必跑全套**，没有跑过不说绿。
-2. **证明回退会红**：把修复去掉，指出哪条测试失败（CHANGELOG 的 §验证 列了每一项）。
-3. **样式类 bug 用样式断言**：这类问题行为测试看不见，所以直接断言 CSS 并检查渲染出的 DOM。
-
-辅助工具：`test/preview.mjs` 渲染面板预览（`PREVIEW_THEME` / `PREVIEW_LOCALE` 分别钉主题与语言），
-`test/shots.mjs` 截图（截完会删掉 `preview.html`），
-`test/inspect-qodercli.mjs --strings <filter>` / `--find <regex>` 解码 `qodercli` bundle
-（XOR key `h74YFijkSnty`；**代码标识符没有混淆**，所以 `--find` 能直接定位类名/函数名）。
-
-## 17. 明确不做（含理由）
-
-| 不做 | 理由 |
-|---|---|
-| **AGENTS.md 层** | Qoder 的 `globalMemory`/`projectMemory`/`localMemory`/`pluginMemory` 四个桶的原料是 `getAllQoderMdFilenames()`，即**指令文件族**；在 DSH 那由 `dsh-agent-instructions` 负责。照搬会**同一份文件每次请求注入两遍**。 |
-| **skills 记忆目录** | 技能是 harness 的一等子系统（`ctx.skills`）；Qoder 的 `getProjectSkillsMemoryDir()` 在整个 bundle 里**只有定义、没有调用点**，没有行为可对齐。 |
-| ~~**daily journal**~~ | **2026-10-15 已实现**（§24）。原先不做的理由是"那是 QoderWork 桌面版的工具面，不是 SDK 记忆契约"——这条理由**仍然成立**，但用户明确要求做，所以按 bundle 里逐字解出的提示词与 `action:"add" target:"daily"` 工具面实现，并把存储位置（bundle 里查不到）当作本插件自己的选择记下来。 |
-| **旧数据迁移** | 明确决定：不做任何兼容层。改身份前的旧目录既不读也不删；要留内容就**手工复制**过去（一次性操作，不是插件逻辑）。 |
-| `usage` / `credits` / `requester: 'sdk'` | 辅助调用不回报计费。 |
-| `origin: 'main_session'` | 命名差异：轮内 pass 报 `turn_complete` + `midTurn: true`。 |
-
-## 18. 已知限制
-
-- **两处提示词片段解不出**（见 §14），已就地声明而不是编造。
-- **索引约束只报告不阻止**：写入时检查"约 25KB"与"单行超过约 200 字符"会写进结果、日志与面板，但**不拒绝**——原实现也只在提示词里说。
-- **面板可编辑项只有六项**（§3、§20、§21、§22、§23）：模式、全局作用域、注入上限、写入预算与三个策略开关。其余配置直接改插件配置或用命令；
-  这是刻意的取舍（29 项全量表单做过又删了）。
-- **删除的沙箱代价**（§13）：只读后端是主动拒绝，而不是被后端强制拦截。
-- **`projectKey` 有损**（§7）：`D:\a-b` 与 `D:\a\b` 共用一个记忆目录——这是 harness 自己的取舍，本插件继承它。
-
-## 19. 与 harness 版本的兼容
-
-**已核对：桌面版 harness `0.2.0-rc.2`**（以及 profile 解析到的 `0.1.7-rc.2`）。核对方式是**问正在运行的
-宿主本身**，而不是只看自己写的替身：
-
-| 依赖 | 怎么核对的 | 结论 |
-|---|---|---|
-| `fs`（含 `processPath`，删除靠它） | 宿主 Inspect 的 `Service.listService('fs')` | 方法齐全，签名未变 |
-| `llm.stream` 的入参 | `Service.listService('llm')` 的 `GenerateOptions` | 我们发的是合法的 `RequestUserInput`（`{role:'user',content:[…]}`）、`maxTokens?` 可省、**没有**发那个闭合联合 `purpose` |
-| 流式分片 | `StreamChunk` 联合 | 新分片（`usage`、`reasoning-delta`）被我们静默忽略，不会抛 |
-| 结束原因 | `FinishReasonMap` | 与我们的处理一一对应（stop / tool-calls / max-tokens / aborted / error） |
-| 工具调用回填 | `ToolSchema` / `ToolResultMessage` | 我们的 `parameters`、`source.kind:'tool'`、`toolCallId`、`isError` 全部吻合 |
-| 会话与触发点 | `Event.listEvents('session/event')` 的 `SessionEventMap` | `turn/end`（`{turn, reason}`）与 `Session.header/requestHeader/snapshotEvents/deriveMessages` 未变；`EpochHeader.config` 仍是我们在 `resolveRoute` 里读的形状 |
-| 计量 | `tokenMeter.estimateMessage` | 仍在（我们本就带本地启发式兜底） |
-| 面板挂载 | 客户端 `Slots.listSubTree('settings.section')` | 占用者 `{ registrant: 'memory-ui', id: 'memory', order: 60, active: true }` |
-| 主题 token | 面板用到的 **20 个 `--dsw-*` 全在**运行版的 bundle 里（有测试对着它跑） | 无失效 token |
-
-**升级后怎么重新核对**：跑 `node test/*.test.mjs`（那条 token 检查会打印它用的 oracle），
-再问一次上面几个 Inspect 查询即可——`Settings → Memory` 面板本身也是活体证据。
-
-**一个真实的坑**：桌面版把 harness 打包进**一个 `app.asar`**，而 profile 的 Node 解析可能仍指向
-**更旧的 npm 安装**（本机就是 `0.1.7-rc.2` 对 `0.2.0-rc.2`）。于是"测试全绿"可能验的是旧版本——
-这正是升级能被漏掉的方式。`test/harness-env.mjs` 因此优先找**正在运行**的那份
-（可用 `DSH_HARNESS_BUNDLE` 显式指定），找不到就跳过并说明。
-
-## 20. 两级开关：全局作用域与会话模式
-
-**为什么要有全局那层**：记忆是每台机器一套配置。有些会话不该被记忆影响——一次性的试验、排障、或一段不想
-留下痕迹的对话；也有些会话只想要**本仓库**的约定，不想要别的项目攒下来的经验。所以是**两级**：
-
-| 层级 | 怎么改 | 作用 |
-|---|---|---|
-| **全局** | 设置页的「全局作用域」下拉，或 `/memory-scope all\|user\|project`，或插件配置里的 `userScope`/`projectScope` | 所有 `auto` 会话跟随的作用域 |
-| **会话** | 对话页输入框里的**记忆按钮**（一次点击循环五态），或 `/memory-switch auto\|all\|user\|project\|off` | 只影响这一个会话 |
-
-会话五态，按循环顺序：
-
-| 状态 | 含义 |
-|---|---|
-| `auto` **跟随全局** | 默认，什么都不存（所以配置改动能继续影响它） |
-| `all` **用户 + 项目** | 本会话同时用两个作用域，不管全局那一层怎么设 |
-| `user` **仅用户** | 只读写跨项目（用户）记忆，本项目记忆既不加载也不记录 |
-| `project` **仅项目** | 只读写本项目记忆，跨项目知识既不加载也不记录 |
-| `off` **关闭** | 两半一起停 |
-
-**为什么 `all` 要单独存在**：`auto` 是"跟随配置"，所以在全局被设成"仅项目"的机器上，一个会话**没有别的办法
-把用户作用域要回来**。`all` 就是那个办法——它把两个开关都打开，只影响这一个会话，全局那层不动。
-
-**三个作用域状态复用全局那套映射**：`scopedConfig` 调的正是面板和 `/memory-scope` 写全局时用的
-`scopeFields`（`all`/`user`/`project` → 两个布尔）。"这个会话用哪些作用域"是一个问题、一个答案，写第二份
-开关映射只会让两边漂开——而 `user` 和 `project` 恰好是相反的两个方向，一个复制粘贴就会让"仅用户"的会话读到
-本项目的笔记（这条有测试钉住两侧）。
-
-**五态而不是三态**：`auto` 与 `off` 在后果上完全相反，而中间三个状态的区别也在后果上——所以每个状态各有一句
-自己的说明，漏写一个会被测试拦住（`MODE_CONSEQUENCE` 的键必须与 `SESSION_MODES` 完全一致）。
-
-**为什么会话控件在对话页而不是设置页**：因为它是**按会话**的，而设置页是全局的。关键事实是
-`conversation.input.left` 这个槽位**把 `sessionId` 当标准 prop 交给控件**——所以那个按钮知道自己在哪个会话里，
-一次点击写的就是它自己。设置页没有这个信息，之前只能在面板上**枚举所有活会话**再指名切换（那段代码已随
-按钮一起删掉）。
-
-**路由仍然拿不到"当前会话"**：HTTP 请求路径上**没有任何地方建立 initiator 边界**
-（`withInitiator` 全仓库只有 agent loop 的 `kick()` 用），所以 `GET/POST /api/memory/switch` 的
-`session` 字段是必需的，指到不存在的 id **明确拒绝**（409），而不是悄悄回退到"碰巧在跑的那个会话"。
-`/memory-switch` 命令能省略会话，因为它有 initiator。
-
-**`off` 关掉后该会话**：
-- **不注入**任何记忆（`agent/pre-step` 在跑消费之前就问开关，所以**一个记忆文件都不会读**）；
-- **不记录**（`turn/end` 的后台 pass、轮内 pass、以及 dream 全部跳过）；
-- **已排队**的记忆消息会被**移除**——切换前注入的那条如果留着，就是躺在读者自己队列里的一句谎话；
-- **写入被拒**（`memory` 工具的 `write`/`edit`/`delete` 报出原因），但**读取照旧**：问记忆一个问题，不等于让记忆影响这个会话；
-- **`/memory-refresh` 明说原因**，而不是伪装成"没有东西可注入"——这两种情况的解法不同，只有一种是 bug。
-
-**加状态时最容易漏的一环是存储**：那个 JSON 文件**读和写各有一半**，而读的那半过去用一句手写的
-`mode === 'project' || mode === 'off'` 过滤。加了 `all`/`user` 之后，`setMode` 会照写不误，读回来却被丢掉——
-会话**看起来**设好了，重启后又变回跟随配置，而且日志里什么都没有。现在读写两半都过同一个
-`isStoredSessionMode`，并且有一条测试**真的走完整条路**：设置 → 读磁盘上真实写下的字节 → 用那些字节重新
-启动一个插件 → 断言模式还在。（只喂一个手工构造的 store 文件是不够的，那只测到了读的那半——这条正是反证
-跑出来的 `MISSED`。）
-
-**`project` 不是静音的一半，是作用域收窄**：该会话照常读、照常写，只是把 `user` 作用域整个摘掉。实现上它**只
-做一件事**——把会话的选择折进配置本来就有的 `userScope`/`projectScope` 开关（`scopedConfig`），于是 roots、
-信任门、身份哈希、生成提示词看到的是**同一个画面**，没有第二套需要同步的代码路径。工具、预览、刷新、生成
-四处都过这一层，所以"仅项目"的会话**不会**经由 `memory` 工具偷偷往 user 作用域写。
-
-**开关存在哪，是被 harness 逼出来的选择**：
-
-| 载体 | 能不能用 | 原因 |
-|---|---|---|
-| 会话日志（`session.append`） | **不能** | 插件事件不在 harness 自己的类型表里，落盘时 `data` 会被丢掉，读取端随后**拒收整个日志**（`session event "…" at seq N has an invalid event envelope`），直接卡住会话重开。逃生舱是信封上的 `ignorable` 标记，而**只有 harness 自己**会设它。 |
-| `<DSH_HOME>/memory-off-sessions.json` | **用它** | 和 `trusted-folders.json`、`dream-state.json` 同一类东西：**关于会话的插件状态**，不是记忆，永不注入。它在所有记忆根之外，而且是 `.json`（根目录只收 `*.md`），所以也不会被当成内容读进来。 |
-| 只放内存 | 不够 | 重启后选择就丢了；而"选择被遗忘"必须好过"记忆在没人知道的情况下到处都不出声"。 |
-
-**存的是"偏离"，不是"许可"**：`auto` **根本不写进文件**，文件里只有被改成 `project`/`off` 的会话。丢了、坏了、
-从来没有过 ⇒ 一切照常跟随配置。失败方向因此是"选择被忘了"，而不是"记忆到处都不出声且没人看得出为什么"。
-这也让**配置改动能继续影响**那些没被显式钉住的会话。
-
-**按会话 id 记，所以**：续接（resume）保留 id ⇒ 选择跟着走；子代理有**自己的** id ⇒ 不会继承父会话的选择
-（继承了就等于让一次委派静悄悄地不留记忆）。
-
-**旧格式能读**：v1 是一个 id 数组（全部表示 `off`）。三行兼容代码，换来的是**升级不会把某人关掉的会话悄悄打开**。
-
-**`auto` 必须能说出它跟随的是什么**：所以按钮的 `title` 写明三件事——**当前是什么**、**它意味着什么**、
-**点一下会变成什么**（`当前：跟随全局 · 按全局作用域来：用户 + 项目 · 点击切到用户 + 项目`）。只写"点一下
-变成什么"是不够的：`跟随全局` 和 `已关闭` 在后果上完全相反，而旧版提示只说了下一个状态，两种处境看起来一样。
-**五**个状态各有一句自己的说明（`仅用户`＝不读写本项目记忆；`仅项目`＝不读写跨项目知识；`已关闭`＝既不注入
-也不记录），所以它们**在后果上**可区分，而不只是名字不同。无障碍名（`aria-label`）用的是整句，读屏用户拿到
-和悬停看到的一样多。
-
-**圆点按"种类"配色，而不是一个状态一个色**：绿＝跟随配置（`auto`），蓝＝本会话被**钉住**（三个作用域状态共用
-一个蓝），琥珀＝静音（`off`）。所以一眼看过去是"我改过这个会话"而不是"现在是哪个状态"。每个状态都必须有
-规则——漏掉一个会落到中性灰，读起来像"什么都没设"，反而比加这个状态之前更不清楚（有测试走遍
-`SESSION_MODES` 要求每条都有配色，并且三个钉住的状态必须归到同一种颜色）。
-
-**它答不出话时会说清是哪种答不出**：三种情况分开——**没有会话 id**（还没法谈会话级设置，按钮置灰、
-提示直说）、**轮询还没回来**（显示"正在读取"，不是失败）、**真的失败了**（错误原文上到按钮，`data-state="error"`）。
-旧版把三种都报成"无法更改本会话的记忆设置"，等于为一次根本没发生的请求怪罪用户。
-
-**全局作用域在设置面板里能改**（`POST /api/memory/scope`）：一个下拉 + 保存，选项是
-**用户 + 项目 / 用户 / 项目**（内部值 `all / user / project`），和 `/memory-scope` 的用法一字不差。
-写入方向（`scopeFields`）和读取方向（`describeGlobalScopes`）在**同一个模块**里，所以两半不可能对
-`user` 的含义产生分歧；`/memory-scope` 也改用同一个 `scopeFields`，删掉了它自己那份重复实现。四种组合
-都如实报告（`all`/`user`/`project`/`none`）——把 `userScope: true, projectScope: false` 说成 `all`
-就是把话说反了（这条有测试钉住）。
-
-**选项文案不带"仅"**：这是**全局作用域**控件，它选的就是"开哪几个作用域"，`用户`/`项目` 已经说完了；
-`仅用户`／`仅项目` 那种写法属于**会话模式**——那里五个状态互为替代品、有对照，所以"仅"字有意义。同一个三值
-集合的**顺序也只有一种**：`GLOBAL_SCOPE_CHOICES` 同时决定下拉顺序、路由的 400 提示和 `/memory-scope` 的
-用法提示，避免同一个集合出现两种排法让人以为是不同的东西。
-
-**`none`（两个作用域都关）只报告、不提供**：它是"完全不要记忆"的第四种说法，与 `enabled: false` 重复。
-下拉里没有它，路由也拒绝它（400）。但配置里真的处于这个状态时，面板会**照实显示**并给出去掉的路径——
-把人编辑出来的状态渲染成一个不存在的选项才是撒谎。
-
-**没有 `configEditor` 的组合（headless / ACP / SDK）面板不给保存按钮**，退化成只读一行：一个点了只会得到
-501 的控件比只读更糟。这个判断来自 host（`/status` 的 `configWritable`），因为 `configEditor` 是 Host 服务，
-浏览器那半查不到。
-
-**面板不给"插件会拒绝的控件"**：`native` 模式下注入上限不可编辑（`/status` 的 `consumptionWritable` 为
-false），只显示当前值并说明切到 `mode: custom` 才能改。全局作用域在两种模式下都可写——那是 `native` 也放行
-的三个开关。这与 §3 记的那个缺陷是同一条原则：**控件不能提供插件随后会拒绝的值**，只不过"拒绝"的后果比
-想象的严重得多（插件不激活，不是设置不生效）。
-
-**历史 bug**：`/memory-scope` 之前用一串内联三元读状态，把"两个作用域都关"读成 `project`——正好说反了。
-现在读取方向也走 `describeGlobalScopes`。
-
-**离开 `off` 不会自己重新注入**：下一步会发现块没变而保持沉默——这是对的，但看起来像什么都没发生，
-所以命令会直说，并指出 `/memory-refresh` 可以强制拉一次。
-
-**顺带修掉的一个真 bug**：`GET /api/memory/preview` 把**会话**传给了 `previewMemory(agent)`，于是
-`target.session` 是 `undefined`、`visibleMemoryState(undefined, …)` 抛
-`Cannot read properties of undefined (reading 'surface')`，被路由的 catch 收成 **HTTP 500**——只要会话在
-作用域内，面板的"注入预览"就是坏的。之所以一直没被发现，是因为面板的渲染夹具**喂的是写死的 payload**，
-从来没有真的走过那条路由（现在有一条集成测试真的调它）。
-
-**全局那层怎么写的**：插件改自己的配置走 harness 的 **`configEditor.edit`**（校验、落盘、按正常 Loader 路径
-reconcile）。没有它（headless 组合）时 `/memory-scope` 会**说明**当前值并指出去配置里改，而不是假装改成功了。
-
-## 21. 在面板里改注入上限（`POST /api/memory/budget`、`/memory-budget`）
-
-**面板里能改的六项之一**（另外五项是 §3 的模式、§20 的全局作用域、§22 的写入预算和 §23 的三个策略开关），也是最常需要调的那一个：上下文紧张就调小，
-记忆总被截断就调大。面板的「注入预算」区里它是一个数字输入框 + 保存按钮（不是"每敲一下就存"——那样在输入
-`1500` 的过程中会先把 `1` 写进去），旁边写着当前值和这条提示：
-
-> 允许进入上下文的记忆上限。要完全不注入请关掉消费开关——0 不是合法的上限。
-
-**只在 `mode: custom` 下可编辑。** `native` 模式拒绝 `consumption.*`，所以那里这一行是**只读的**：照实显示
-当前值，并写明要改就得先把上面的「模式」切成 `custom`——**而那个开关就在同一个面板里**，不用手改 YAML 再重启。
-记得 `mode` 默认就是 `native`（§3）。这条限制是修一个**把插件整个弄挂**的缺陷时加的——见 §3。
-
-**为什么不能用 0 表示"不注入"**：schema 是 `natural().min(1)`、SDK 也要求正整数，`0` 在配置层就被拒绝，
-到不了渲染层。所以"完全不注入"的正确表达是 `consumption.enabled: false`，提示就照这么说。
-那个下限是**一个共享常量** `CONSUMPTION_MIN_TOKENS`：schema、路由、面板输入框的 `min` 都读它
-（面板拿不到 Host 模块，所以这个值随 `/status` 的 `minTokens` 下发），因此没有任何界面会给出一个插件
-随后会拒绝的值。
-
-**路由做四件事**，每一件都有测试：
-
-1. **强制转换**：表单发的是字符串，所以整数要么是 number、要么是纯数字串。**不猜**——`Number('')` 是 0、
-   `Number(true)` 是 1、`'1e3'` 和 `'0x10'` 也都能被 `Number` 接受，这些正是"配置被悄悄改掉"的来源。
-2. **查下限**：低于 `CONSUMPTION_MIN_TOKENS` 一律 400，并在原因里说清怎么才算"不注入"。
-3. **写入前校验**：候选配置先过**真正的 schema + 真正的规则**（`judgeConfig`），也就是 `apply()` 用的那两个。
-   不过关就在 `configEditor.edit` 的**回调里**抛错——那个回调在落盘之前跑，所以 profile 原样保留。这一步是
-   真正防住"写进去之后插件不激活"的地方；只看请求本身是不够的，因为**默认值也会违反规则**（`mode` 不写＝`native`）。
-4. **写入**：走 `config-write.js` 的 `writeConfig`，即 harness 的 `configEditor.edit`，并且**深合并**——
-   `edit` 收到的是用户写下的原始配置，整体替换会悄悄丢掉面板不管的每一项。
-
-**400 还是 501**：被插件拒绝（第 3 步）是 **400**，因为是**这个请求**的配置不合法，原因里写着怎么改；
-没有 `configEditor` 的组合（headless / ACP / SDK）才是 **501**：请求没问题、值也合法，是**这个组合**
-不具备写配置的能力。两者混用等于把调用者的错和自己的部署差异算成同一件事。
-
-**为什么不做成一整页可编辑设置**：试过，29 项，然后删掉了——一个把插件每个旋钮都摊开的面板，比一个
-把最常改的那一项做好的面板更难用。现在面板里可编辑的只有**六项**：模式（§3）、全局作用域（§20）、
-注入上限（§21）、写入预算（§22）和三个策略开关（§23）。要改别的仍然可以直接改插件配置或问 `/memory`。
-
-**`/memory-budget` 命令**做同样的事（`/memory-budget 1500`、`/memory-budget status`），并且复用同一个
-写入器，所以命令和面板不可能给出不同的规则。
-
-**两个写入器合成一个模块**：`/api/memory/` 下的 `budget`、`scope`、`mode`、`write-budget` 和
-`generation` 都走 `lib/config-route.js` 的同一段"收窄 → 拒绝 → 写入"（原来是 `budget-route.js`，
-加第二项时扩成 `config-route.js`）。五者共用同一个 `writeConfig`，所以"什么算可写"只有一个答案：
-`refused` → 400，`unwritable` → 501。
-
-## 23. 在面板里改三个策略开关（`POST /api/memory/generation`）
-
-面板「状态」区的**生成**一行，三个下拉（**自动记录** / **记忆巩固** / **日刊**）+ 一个保存按钮：
-
-| 面板 | 配置 | Qoder 对应 |
-|---|---|---|
-| 自动记录 | `generation.enabled` | `auto_memory_policy.enabled` |
-| 记忆巩固 | `generation.dream.enabled` | `auto_dream.enabled` |
-| 日刊 | `generation.journal.enabled` | Daily Memory Journal |
-
-**默认值照 Qoder，但方向相反的是"自动记录"**：Qoder 三个开关**默认都是关的**（自动记忆在那边是要显式打开的功能）；本插件是**装来用的插件**，所以 `generation.enabled` 默认 `true`，而 `dream.enabled` / `journal.enabled` 照 Qoder 默认 `false`（各自都要多花一次调用或一次写入）。这条差异是**刻意的**，不是没对齐。
-
-**关掉「自动记录」必须连带关掉它的「每轮触发」**，因为 SDK 拒绝 `generation.enabled: false` 旁边
-`turnComplete.enabled: true`。只写 `enabled: false` 会让这次写入**被拒**，用户看到的就是一个按了没反应的开关。
-所以路由把它一起改掉，**并回报改了哪个键**（`implied`），面板照实显示——一个会悄悄改邻居的开关就是在消耗信任。
-反过来打开时也恢复它，所以"开"真的意味着自动记录又跑起来了。
-
-**只在触发"明确为 true"时才动它**：规则只在这个组合下才咬，凭空补一个用户没写过的
-`turnComplete` 反而是往配置里塞东西（缺省不等于 `enabled: true`）。
-
-**值必须是 `true` / `false` 两种拼写之一**，不做真值转换：`<select>` 可能发字符串 `"false"`，那正是最容易被
-当成 `true` 的形态；`1`、`'yes'`、`'on'` 一律 400。
-
-**被环境变量固定的开关会说清楚**：`DSH_MEMORY_HEADLESS` / `DSH_MEMORY_DREAM` 会**盖过配置**，所以那种
-情况下这个开关按了也不会生效。面板把 `envPinned` 列出来并写明原因——一个不能生效的开关比没有这个开关更糟。
-
-## 22. 在面板里改写入预算（`POST /api/memory/write-budget`）
-
-面板「注入预算」区里的**写入预算**一行，两个数字框：**每轮文件数**（`generation.maxWrites`，索引也算一个）
-和**单文件字节**（`generation.maxWriteBytes`），共用**一个**保存按钮——它们是同一件事的两半，分两个按钮
-就会出现"改了一个、另一个没存"的中间态。
-
-**两者默认都是 `0`＝不设上限。** Qoder 的 SDK 与 qodercli **都没有这两个字段**，所以这里没有可对齐的
-默认值：预设一个 Qoder 根本没有的上限不是"对齐"，是自造约束。想限就自己设。
-
-**控件把 `0` 显示成「不设上限」，不显示裸的 0。** 一个数字标签下面写着 `0`，读起来像是限制得最死，
-而它其实是最松的——这是必须用文字说清的那类零。提示里也写明 `0＝不设上限（默认）`。
-
-**`generation.*` 在 `native` 模式下被拒绝**，和注入上限一样，所以 `native` 下这一行只报告值
-（`不设上限 · 16384`）、不给控件：写进去的配置插件自己不接受，而**被拒绝的配置会让插件不激活**（§3）。
-
-**校验只有一条**：两个值都必须是非负整数（`0` 合法，负数、小数、`'x'`、空串、`true` 全部 400）。
-注入上限那条路的 floor 是 `1`，这里是 `0`，因为两者的 `0` 含义完全不同：那边 `0` 是"不注入"的错误表达，
-这边 `0` 是"不设上限"。
-
-**规则只有一份**：`config-rules.js` 里是 `validateMemoryConfig` 和 `isOverridable`，`scopes.js` 里是作用域
-词表。二者都是**叶子模块**（不 import 任何东西），所以 loader 路径、写入路径、路由和面板读的是同一份，
-不存在"第二份规则慢慢和第一份漂开"。`config-write.js` 排在 schema **之上**是有意的：它必须能问
-`apply()` 问的那个问题，所以它用的是真正的 `Config`，不是手搓的近似。
-
-## 24. 日刊（Qoder 的 Daily Memory Journal）
-
-Qoder 的工具面是 `memory` 工具加 `action: "add"` + `target: "daily"` + `chat_id`。逐字解出来的契约：
+Qoder 的工具面是 `memory` 工具加 `action: "add"` + `target: "daily"`。逐字解出的契约：
 
 > **Daily Memory Journal**: After the memory review above, write a daily memory entry if this
 > conversation produced information useful beyond this session.
@@ -905,34 +281,251 @@ Qoder 的工具面是 `memory` 工具加 `action: "add"` + `target: "daily"` + `
 >
 > Write all daily memory items in a single tool call. If nothing qualifies, skip daily memory.
 
-**"After the memory review above" 决定了它挂在哪**：日刊**不是**交互路径上的第四次调用，而是**后台生成 pass
-内部**多写一个文件——pass 本来就在跑，所以开启日刊的代价是**一次写入**，不是一次新的模型调用。提示词只在
-`journal.enabled` 为真时才出现（教一个工具包会拒绝的调用，就是提示词在许一个插件做不到的承诺）。
+**"After the memory review above" 决定了它挂在哪**：日刊**不是**交互路径上的第四次调用，而是**后台生成
+pass 内部**多写一个文件——pass 本来就在跑，所以开启日刊的代价是**一次写入**，不是一次新的模型调用。
+提示词只在 `journal.enabled` 为真时才出现。**日期和路径由插件算，模型只给 bullets**（模型算日期出了名的
+不靠谱）。
 
-**日期和路径由插件算，模型不算。** Qoder 的提示词里 `chat_id: ` 是运行时插值的（框架给身份，模型原样回抄）。
-这里会话本来就在手上，**模型算日期是出了名的不靠谱**，所以两者都不经过工具调用：模型只给 bullets。
+文件落在 `<root>/journal/<YYYY-MM-DD>.md`，**子目录是刻意的**：`listRootFiles` 只读根目录的平铺一层，
+所以日刊对注入**不可见**——它是"那天发生了什么"的记录，不会随天数增长而挤占上下文。
+**代价说清楚**：`memory` 工具的 `list`/`read`/`search` 同样看不到日刊；要读就直接打开那个文件。
+**同一天是追加**（读 → 追加 → 写回），并带着读到的版本做 compare-and-swap，两个 pass 同时结束不会互相覆盖。
+8 条 / 120 字符只是提示词措辞，**只报告、从不拒绝**。日刊**计入每轮写入预算**。**时区用本地日期**。
 
-**文件落在 `<root>/journal/<YYYY-MM-DD>.md`，即子目录里，而且这是刻意的。**
-`listRootFiles` 只读根目录的**平铺**一层，所以嵌套文件对注入**不可见**：日刊是"那天发生了什么"的记录，
-不是每一步都要塞进上下文的记忆。这也意味着**日刊不会随天数增长而挤占上下文**——写在根目录的
-`2026-10-15.md` 会像普通内容文件一样被注入，一个月的日刊足以挤掉它本该补充的记忆。
+## 7. 作用域与开关
 
-**代价要说清楚**：`memory` 工具的 `list` / `read` / `search` **同样看不到日刊**，因为三者都走
-`listRootFiles`。这是刻意的取舍，不是遗漏——日刊是给人看的日志，不是给模型检索的记忆；要读它就直接打开
-`<root>/journal/<日期>.md`。若哪天真要让模型检索日刊，正确的做法是给搜索加一个显式的"含子目录"开关，
-而不是把日刊挪回根目录（那会重新引入注入膨胀）。
+记忆是每台机器一套配置，所以开关分**两级**：
 
-**同一天是追加，不是替换。** 一天会积累多次 pass、多个会话，所以文件是"读 → 追加 → 写回"。`memory_write`
-是整份替换，若日刊建在它上面，一天只会留下最后一次 pass。写入还**带着读到的版本**做 compare-and-swap，
-所以两个 pass 同时结束也不会互相覆盖，而是让其中一个变成 stale 被拒。
+| 层级 | 怎么改 | 作用 |
+|---|---|---|
+| **全局** | 设置页的「全局作用域」下拉，或 `/memory-scope all\|user\|project`，或配置里的 `userScope`/`projectScope` | 所有 `auto` 会话跟随的作用域 |
+| **会话** | 对话页输入框里的**记忆按钮**（一次点击循环五态），或 `/memory-switch auto\|all\|user\|project\|off` | 只影响这一个会话 |
 
-**两个数字只是提示词里的措辞，不是闸门。** Qoder 的 bundle 里对它们**只有措辞、没有拒绝路径**（和索引的
-"about 25KB" 同一种），所以这里也只**报告**、从不拒绝：一条 bullet 超长就让日刊停止记录，比稍微啰嗦一点糟得多。
+会话五态（按循环顺序）：
 
-**日刊计入每轮写入预算**（`generation.maxWrites`）——它本来就是一次写入。把它豁免掉，预算在开启日刊的那一刻
-就成了谎话。
+| 状态 | 含义 |
+|---|---|
+| `auto` **跟随全局** | 默认，什么都不存（所以配置改动能继续影响它） |
+| `all` **用户 + 项目** | 本会话同时用两个作用域，不管全局那一层怎么设 |
+| `user` **仅用户** | 只读写跨项目（用户）记忆，本项目记忆既不加载也不记录 |
+| `project` **仅项目** | 只读写本项目记忆，跨项目知识既不加载也不记录 |
+| `off` **关闭** | 两半一起停 |
 
-**时区用本地日期**，不是 `toISOString().slice(0,10)`：在 UTC+8 后者会在早上 8 点翻页，把一晚上的工作记到
-"明天"。要读这个文件的是人，不是 UTC。
+- **`all` 单独存在**是因为 `auto` 是"跟随配置"：在全局被设成"仅项目"的机器上，一个会话没有别的办法
+  把用户作用域要回来。
+- **`project` 不是静音的一半，是作用域收窄**：它把会话的选择折进配置本来就有的 `userScope`/`projectScope`
+  开关，于是 roots、信任门、身份哈希、生成提示词看到的是**同一个画面**。
+- **`off`**：不注入（一个记忆文件都不读）、不记录、**已排队**的记忆消息会被移除、写入被拒、**读取照旧**
+  （问记忆一个问题不等于让记忆影响这个会话）；`/memory-refresh` 会明说原因。
+- **存的是"偏离"，不是"许可"**：`auto` 根本不写进文件，文件里只有被改成别的状态的会话。
+  丢了、坏了、从来没有过 ⇒ 一切照常跟随配置——失败方向是"选择被忘了"，而不是"记忆到处都不出声"。
+- **按会话 id 记**：续接保留 id ⇒ 选择跟着走；子代理有自己的 id ⇒ 不继承父会话的选择。
+- **离开 `off` 不会自己重新注入**（下一步会发现块没变而保持沉默，这是对的），所以命令会直说，
+  并指出 `/memory-refresh` 可以强制拉一次。
+- 控件的 `title` 写明三件事：**当前是什么**、**它意味着什么**、**点一下会变成什么**；
+  圆点按"种类"配色（绿＝跟随配置、蓝＝本会话被钉住、琥珀＝静音）。
 
+## 8. 使用
 
+### 8.1 模型侧工具（记忆 pass 内部）
+
+`memory_list` / `memory_read` / `memory_search` / `memory_write` / `memory_delete`——全部限定在作用域根内，
+最多 8 轮（`MAX_AGENT_ROUNDS`）。**只有 `memory_search` 与 Qoder 同名**；Qoder 的 `memory` / `memory_get`
+在本插件叫 `memory_list` / `memory_read`，提示词里对此有明确说明。`memory_write` 有 `mode: replace | append`，
+还有 `target: "daily"` 走日刊。这一套**没有 `edit`**：它是自己的闭环，`edit` 加在下面的人类工具上。
+
+### 8.2 人类工具 `memory`
+
+| 参数 | 值 |
+|---|---|
+| `action` | `list` \| `read` \| `search` \| `write` \| `edit` \| `delete` |
+| `scope` | `user` \| `project`（默认 project；`search` 忽略它，搜全部作用域） |
+| `query` | `search` 要查的文本（必填；**字面匹配**，不是正则） |
+| `path` | 作用域根内的相对 `.md` 路径（`../escape.md`、`NOTES.txt` 都被拒绝） |
+| `content` | `write` 时的完整文件内容 |
+| `old_string` / `new_string` / `replace_all` | `edit`：要替换的文本 / 替换成的文本 / 是否替换全部出现 |
+
+- **`write` 是整份替换，`edit` 是改一段**：记忆文件是散文，模型想改一行却要自己把其余每一行都完美
+  复现——这就是"改一处、丢一段"的来源，所以推荐用 `edit` 改已有文件。
+- **`edit` 的语义照搬 harness 自己的 `edit`**：`old_string` **必须唯一**（否则拒绝，并告诉你出现了几次、
+  以及 `replace_all` 可以放行），替换是**字面量**（替换文本里的 `$&`、`$1` 不会被展开）。
+- **`edit` 是一次 compare-and-swap**：读出正文、算出新正文、再用**它读到的那一版**写入；中途有人改了
+  （你自己、别的会话、后台 pass），**写入被拒**并告诉你"文件已变，请重读后重试"。`write` 没有这个保护。
+  编辑后的正文还要过 `maxWriteBytes`，且**在落盘之前**检查。
+
+### 8.3 命令
+
+| 命令 | 作用 |
+|---|---|
+| `/memory` | 状态：作用域、信任判定、最近一次生成/消费、变更与告警明细 |
+| `/memory-switch [auto\|all\|user\|project\|off\|status]` | **会话级**记忆模式（§7） |
+| `/memory-scope [status\|all\|project\|user]` | **全局**作用域（§7）：每个 `auto` 会话跟随的那一层 |
+| `/memory-budget [status\|<tokens>]` | **注入上限**（§8.4）：与面板同一个写入器 |
+| `/memory-trust [allow\|deny\|list] [folder]` | 目录信任（写入 `$DSH_HOME/trusted-folders.json`） |
+| `/memory-imports [status\|allow\|deny]` | **会话级**外部导入授权（授权后立即重新加载） |
+| `/memory-delete <scope>:<path>` | 删除一个记忆文件 |
+| `/memory-refresh` | 重新加载记忆（外部编辑后手工拉取） |
+| `/memory-resume` | 清除「连续失败暂停」（Qoder 没有恢复路径，这是唯一出口） |
+| `/memory-flush` | 等后台写入落盘 |
+
+### 8.4 设置面板
+
+面板从上到下的区块顺序：状态行（插件/**模式（可编辑）**/生成/消费/**全局作用域（可编辑）**/巩固/
+闸门/**信任＋授权按钮**/在飞任务）→ **注入预算区**（注入上限**可编辑**；写入预算；注入预览）→
+活动区（最近生成/巩固 + 告警）→ 编辑器（作用域下拉 + 文件名 + 保存/重载/等待）→ **作用域区** → 命令提示。
+
+**面板里能改的六项**：**模式**（`native`/`custom`）、**全局作用域**、**注入上限**、
+**写入预算**（每轮文件数 + 单文件字节）和**三个策略开关**（自动记录 + 记忆巩固 + 日刊）。
+六项共用同一个写入器与同一套规则（`host/config-route.js`：收窄 → 用真 schema 校验 → `configEditor.edit`）。
+除模式与全局作用域外，其余四项都是 `generation.*` / `consumption.*`，**在 `native` 下会被拒绝**，
+所以面板在那里对它们只报告值、不给控件。
+
+**作用域区放在最底是有意的**：它是唯一会**无限增长**的区块（每个有记忆的项目一行），放在控件上方会把
+「打开这个页面本来要改的设置」挤出第一屏。每行写**工作区名字**（查不到就回退成 `projectKey` 目录名），
+悬停显示被寻址的 slug，另有「N 个记忆文件」+ 占用大小，文件折叠在 `<details>` 里（可打开/删除）。
+中英双语，全部用真实 `--dsw-*` 主题 token。
+
+**注入预览**回答的是"我的记忆到底进没进上下文"，给的是**下一步的判定**而不是事后清单：点一下「预览」，
+Host 把真实消费跑一遍再**丢掉结果**，返回 `step.action`（`silent` 什么都不注入 / `snapshot` 全量 /
+`delta` 只发变动 / `none`）、原因、本步 token，以及新会话会收到的**完整块正文**。判定词会翻译成中文，
+原始代码只进 tooltip。**它绝不改变它描述的行为**：不记 `lastConsumption`、不触发 `onResult`、
+只读不写那个会话的注入基准（预览若推进了基准，下一步就会判定"未变"而什么都不发）。
+
+**"为哪个会话预览"按确定性递减的顺序解析**：`?session=<id>` → 进程内的 initiator →
+**唯一的顶层活会话** → 都没有时回答**全局配置**下的内容并**明说**这是哪个问题。
+浏览器请求永远没有 initiator（`withInitiator` 在生产里只有一个调用点），所以第三条正是让面板能说出
+用户正在聊的那个会话。**多于一个候选时不猜**（为错误的会话编一个答案比报告全局更糟），
+**点名但已死的会话是 409**。**读可以这样解析，写不行**：`/api/memory/switch` 的 `session` 必需。
+
+**面板不给"插件会拒绝的控件"**，也不给"按了只会得到 501"的控件（没有 `configEditor` 的组合退化成只读一行）。
+两件如实标注的限制：harness 的 `FsInfo` 只有 `version/type/size`、**没有修改时间**，所以显示的是占用大小；
+harness 也**没有"在文件管理器里打开"的能力**（曾实现过，按用户要求撤掉）。
+
+**Host 路由**（`/api/memory/*`，12 条，客户端字面量必须与之完全一致）：
+
+| 路由 | 用途 |
+|---|---|
+| `status` | 面板与 `/memory` 的状态载荷 |
+| `file` | 读/写/删单个记忆文件 |
+| `preview` | 注入预览（只读） |
+| `refresh` / `flush` | 重新加载 / 等落盘 |
+| `trust` | 目录信任的授予与撤销 |
+| `switch` | 会话级模式（读要会话，写要会话） |
+| `budget` / `write-budget` / `generation` / `scope` / `mode` | 面板可写项 |
+
+## 9. 与 Qoder 的契约映射
+
+| Qoder | 本插件 |
+|---|---|
+| 生成半 / 消费半 | 同构，两个可独立开关的配置块 |
+| 作用域 `user` / `project` | `$DSH_HOME/memory` / `$DSH_HOME/projects/<projectKey>/memory` |
+| `MEMORY.md` 索引 + 内容文件（`type` 四类） | 同构；非法 `type` 回落 `project` |
+| `isTrustedFolder()` | `trust.enabled` + `trust.folders` + `$DSH_HOME/trusted-folders.json` |
+| 排除规则（picomatch） | 同库同选项，**只作用于项目作用域** |
+| 大文件策略（`4e4` 字符） | 报告但**仍然加载**（与 Qoder 一致） |
+| `@` 导入（`ImportProcessor`） | 同语法/标记/`tree`·`flat`/`maxDepth: 5`；授权=配置 ∨ 项目 ∨ **会话** |
+| 每次请求重建记忆块 | `agent/pre-step` 每步重投影 + 哈希；**未变则静默探测，变了才发增量** |
+| `extractionEveryNTurns` 间隔门 | `generation.incremental.everyTurns`（含两种 bypass） |
+| `MOl` 增量转录游标 | `collectTranscript(session, sinceSeq)`（游标只在 pass 真跑过后推进） |
+| `path_glob_match`（just-in-time） | front-matter `paths` ⇒ 只有会话触及匹配路径才加载 |
+| `AutoDream`（时间闸门 + 锁） | `generation.dream` + `$DSH_HOME/.consolidate-lock`（Qoder 的文件名与一小时窗口） |
+| `memory` / `memory_get` 工具名 | 本插件叫 `memory_list` / `memory_read`；`memory_search` 同名 |
+| Daily Memory Journal | `action:"add"` + `target:"daily"`（§6.6） |
+| `MEMORY_HEADLESS` 等环境变量 | `DSH_MEMORY_*`，同一套布尔词汇，环境优先 |
+| 删除记忆 | 模型工具 / `memory` 工具 / `/memory-delete` / 面板删除按钮 |
+
+## 10. 与 Harness 的集成约束
+
+### 10.1 沙箱与 `writePolicy`
+
+harness 的沙箱按**策略**给变更上围栏：`read-only` 拒绝一切写入；`workspace-write` 只允许**规范化后落在
+工作区内**（或平台临时目录）的目标；`danger-full-access` 不设围栏。**读不受限**——记忆一直能加载，
+只有写入会失败，报的就是 `file access denied under workspace-write mode`。
+
+`writeText`/`editText` 的第 5 个参数是"本次调用的 mode + workspaceRoot"。**省略它并不等于"跟随会话"**：
+后端只做 `sandboxPolicy ?? ctx.sandboxPolicy.resolve()`，而不带会话的 `resolve()` 回的是**部署默认值**。
+所以本插件默认 `writePolicy: memory-root`（自声明记忆目录为沙箱根），需要时设成 `session` 去问会话。
+面板那一行把两个模式分开显示：`memory-root · workspace-write · session read-only`——
+两个数字分开显示，才不会把"完全权限的会话"看成"被围栏的会话"。
+
+**删除**：harness 的 `fs` 服务**没有 delete**，但它提供了 `processPath(target)`
+（"the canonical absolute path a subprocess in this filesystem's execution world can open"）。
+`deleteGuarded` 的顺序是：`resolve`+`stat` 并校验 `expectedVersion`（**只删调用方看过的那个版本**）→
+provider 自己有 `remove` 就用它 → 否则用 provider 给的 `processPath` 去 `unlink` →
+声明 `read-only` 的后端**直接拒绝**。允许范围与写入**完全同一套**。如实说明的代价：插件自己发起的
+`node:fs` 调用不经过某个 confining 后端的拦截，所以只读后端是**主动拒绝**而不是被强制。
+
+### 10.2 项目身份：按 Harness，不按 Qoder
+
+| 概念 | 归属 | 本插件怎么用 |
+|---|---|---|
+| Workspace 记录（uuid + canonical path，`ctx.workspaceRegistry`） | harness | 读它拿真实路径与标题；没有就退回规范化路径 |
+| `projectKey` 目录名（形如 `--D-code-demo--`） | harness 的 session-persistence | **就是**项目记忆目录名，和 sessions 分组一致 |
+| `.git` marker 向上查找 | `dsh-agent-instructions` | 只在 `projectRootMarkers` 显式配置时用于划分记忆根 |
+
+`projectKey` 是**有损**的：`-` 与路径分隔符不可区分（`D:\a-b` 与 `D:\a\b` 同名），非 ASCII 或空格会变成
+`~XXXX` 转义（**无法从目录名反推路径**），251 字符处截断且不加 hash。**本插件照抄这种有损**，
+好处是与 harness 自己的 `sessions/` 目录一一对应。
+
+### 10.3 不做 AGENTS.md 层
+
+Qoder 的 `globalMemory`/`projectMemory`/`localMemory`/`pluginMemory` 四个桶的原料是
+`getAllQoderMdFilenames()`，即**指令文件族**；在 DSH 那由 `dsh-agent-instructions` 负责
+（项目级 `AGENTS.md`/`CLAUDE.md`、`.local` 变体、`$DSH_HOME/AGENTS.md`）。照搬会**同一份文件每次请求
+注入两遍**。分工是清楚的：**指令文件（"你要怎么做事"）→ harness；自动记忆（"你之前学到什么"）→ 本插件**。
+技能目录同理：`dsh-skill*` 是 harness 的一等子系统，Qoder 里唯一与记忆目录相关的访问器**只有定义、
+没有调用点**，实现它属于发明功能。证据见 [docs/memory-layers.md](docs/memory-layers.md)。
+
+### 10.4 与 harness 版本的兼容
+
+**已核对：桌面版 harness `0.2.0-rc.2`**（以及 profile 解析到的 `0.1.7-rc.2`）。核对方式是**问正在运行的
+宿主本身**，而不是只看自己写的替身：`fs`（含 `processPath`）、`llm.stream` 的入参与 `StreamChunk`、
+`FinishReasonMap`、`ToolSchema` / `ToolResultMessage`、`session/event` 的 `turn/end` 与
+`Session.header/requestHeader/snapshotEvents/deriveMessages`、`tokenMeter.estimateMessage`、
+客户端 `Slots.listSubTree('settings.section')`、以及面板用到的 **20 个 `--dsw-*` token 全在**运行版的
+bundle 里（有测试对着它跑）。
+
+**升级后怎么重新核对**：跑 `npm test`（token 检查会打印它用的 oracle），再用宿主 Inspect 查一遍上面几个
+服务；`Settings → Memory` 面板本身也是活体证据。
+
+**一个真实的坑**：桌面版把 harness 打包进**一个 `app.asar`**，而 profile 的 Node 解析可能仍指向**更旧的
+npm 安装**——"测试全绿"可能验的是旧版本。`test/support/harness-env.mjs` 因此优先找**正在运行**的那份
+（可用 `DSH_HARNESS_BUNDLE` 显式指定），找不到就跳过并说明。
+
+## 11. 已知限制
+
+- **两处提示词片段解不出**（`qodercli` 的字符串表里没有，例如索引行数上限 `⟨lines⟩`），
+  就地声明而不是编造；模型测试逐句断言原文，并断言这两处标注还在。
+- **索引约束只报告不阻止**（约 25KB / 单行约 200 字符），日刊的 8 条 ≤120 字符同理。
+- **面板可编辑项只有六项**（§8.4）：把插件的每个旋钮都摊开的面板比做好最常改的那一项更难用；
+  其余配置直接改插件配置或用命令。
+- **删除的沙箱代价**（§10.1）：只读后端是主动拒绝，而不是被后端强制拦截。
+- **`projectKey` 有损**（§10.2）：`D:\a-b` 与 `D:\a\b` 共用一个记忆目录——这是 harness 自己的取舍，本插件继承它。
+- **harness 没有文件修改时间、也没有"在文件管理器里打开"**，所以面板只能显示占用大小。
+- **日刊对 `list`/`read`/`search` 不可见**（§6.6）：刻意的取舍，不是遗漏。
+
+## 12. 开发
+
+- **目录结构与分层、体积预算、加东西的清单、测试怎么跑**：[docs/architecture.md](docs/architecture.md)。
+- 一句话版本：host 半按 `lib/{core,config,memory,session,pipeline,host}` 分六个子系统，
+  `index.js` 只做接线，`client.js` 是单文件浏览器产物；层只能向下 import，`test/architecture.test.mjs` 强制。
+- 常用命令：
+
+```powershell
+npm test                 # 全部 475 项（一个套件一个进程）
+npm run test:unit        # 只跑路径含 unit 的套件
+npm run test:integration # 只跑 integration-* 套件
+npm run preview          # 渲染面板预览到 tools/preview.html
+npm run shots            # 重出 docs/images/ 下三张截图
+```
+
+- `tools/` 下的证据工具：`inspect-qodercli.mjs --strings <filter>` / `--find <regex>` 解码 `qodercli`
+  bundle（XOR key `h74YFijkSnty`；**代码标识符没有混淆**，所以 `--find` 能直接定位类名/函数名）、
+  `inspect-session.mjs`、`dump-qodercli-strings.mjs`、`png-probe.mjs`、`composer.mjs`。
+- **改完必跑全套**；每条修复在 [CHANGELOG](CHANGELOG.md) 里都记着它的**反证**
+  （把修复去掉，哪条测试会红）。纯结构调整的判据是"真跑一次 + 基线一致"。
+
+## 13. 许可
+
+MIT。版本号由维护者决定：**第一个完成的版本才是 1.0**，当前 `0.1.0` 是冻结值
+（`test/discovery.test.mjs` 断言它，误改会让测试红）。

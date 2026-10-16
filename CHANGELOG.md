@@ -10,6 +10,14 @@
 早先用过的「1.0.0」「1.1.0」以及过渡期 `0.2.0`–`0.4.0`，都是对未完成工作的**过早标号**；
 它们被折叠进下面这一个 `0.1.0`，而不是留成一段虚构的发布史。
 
+> **路径口径**：本文件记录的是它写下那一刻的树。2026-10-16 的「项目结构重组」把
+> `test/preview.mjs`、`test/shots.mjs`、`test/png-probe.mjs`、`test/inspect-*.mjs`、
+> `test/dump-qodercli-strings.mjs`、`test/composer.mjs` 移到 `tools/`，
+> `test/harness-env.mjs` 移到 `test/support/`，截图移到 `docs/images/`，
+> `test/integration.test.mjs` 拆成 `test/integration-*.test.mjs`；在那之前的条目里出现的旧路径
+> **没有逐个改写**（那会篡改历史），以当前树为准。测试总数同理：本篇写下的数字是当时的，
+> 当前以 `npm test` 打印的为准。
+
 ---
 
 ## [0.1.0] — 第一个完成版本
@@ -19,6 +27,53 @@
 每一条契约行为都尽量引用解出的原文或代码。
 
 ### 新增
+
+**项目结构重组：`lib/` 分六个子系统、测试按主题拆分、README 重写（2026-10-16）**
+
+结构和文档一起做的，因为它们是同一个问题的两半：**代码里最大的文件是测试，文档里最长的文件是自述**。
+
+- **`lib/` 从 36 个模块平铺改为六个子系统**：`core/`（原语）`config/`（配置词汇与写入路径）
+  `memory/`（记忆领域）`session/`（谁在作用域内）`pipeline/`（两个半的编排）`host/`（harness 看到的面）。
+  `index.js` 与 `client.js` 留在 `lib/` 根——前者是入口，后者必须保持单文件浏览器产物，
+  所以 `package.json` 的 `main` / `exports` 与四处 `join(..., 'lib', 'client.js')` 都不用动。
+  搬的是物理位置，行为不动：对外导出面、`CONSUMPTION_MIN_TOKENS` / `PACKAGE_NAME` /
+  `SESSION_MODES` / `MODES` / `LARGE_FILE_CHARS`、`ROUTE_PATHS` 全部**逐字节与搬前一致**（已比对）。
+- **架构守卫先重写，再搬**。它原来 `readdirSync(lib/)` 只扫一层、又用只认一级 `'./x.js'` 的文本正则建图：
+  模块一进子目录，源集合与依赖图会**双双变空**——无环性、分层这些检查会「空绿通过」，比报红更危险。
+  现在递归收集、按相对路径解析每一条 specifier（`./` `../`、动态 `import()`、副作用 `import`、单双引号），
+  解析不到即失败；加到 18 条判据，其中三条是专门为此加的：「每个模块都要有条目、条目不能指向不存在的
+  模块」（缺登记的文件过去与 `undefined` 比较，而 `undefined < n` 恒 false，等于放行）、
+  「`lib/` 目录集合就是声明的那几个」、「相对 specifier 数量下限」。逐条做过负面对照：
+  塞一个未登记模块 ⇒ 点名它变红；塞一条 `import './missing.js'` ⇒ 解析哨兵点名它变红
+  （这条**第一次是绿的**——正是它暴露了扫描器看不见副作用 import 的洞，修完才发现）。
+- **测试工具搬出 `test/`**：`tools/`（面板预览、截图、PNG 探针、qodercli 解码、会话检视）、
+  `test/support/`（公共助手）、`docs/images/`（截图是文档资产）。新增 `test/run.mjs` 与 `npm test`：
+  递归发现、一个套件一个进程、按退出码判成败、汇总各套件自报的计数。
+  原因很实在：文档里那句 `node test/*.test.mjs` **根本跑不起来**（PowerShell 不给原生命令展开通配符，
+  node 收到字面量；会展开的 shell 里 node 又只认第一个入口），而 `package.json` 当时**没有 scripts**。
+- **4920 行的集成测试拆成 9 个主题套件 + `test/support/integration-harness.mjs`**（替身与夹具，
+  0 个 `test()`）。拆分脚本按「第 n 个 `await test(` 对应第 n 个列首 `})`」取跨度（原文 182 : 182 一一对应），
+  所以不存在把某条测试切成两半的可能。判据有三层：`npm test` 全绿、**测试名多重集拆分前后完全相同
+  （182 = 182）**、九条计数相加 = 182。没有任何一条测试的正文或断言被改。
+- **README 重写**（938 行 → 当前版本）：原文件把三份内容混在一起——使用说明、设计理由、和「这里曾经错过、
+  为什么」的历史；`## 23` 还排在 `## 22` 前面，§3 与 §4.4 已经写过 §20/§21/§22/§23 的主题。现在按读者分层：
+  README 讲**怎么用**，`docs/architecture.md`（新）讲**怎么改**，历史留在本文件。
+  顺手改掉三处过期事实：测试数（文档写 332，实际 **475**，而且整张表漏了 journal 那一套）、
+  模块数（写 26 个，实际 35 个 host 模块 + 入口 + client）、路由表（缺 `/api/memory/file`、`/refresh`、`/flush`
+  三条）。补上：示例配置里缺的 `generation.enabled`、`memory` 工具缺的 `query` 参数、`$DSH_HOME` 布局里
+  缺的两个状态文件、以及面板截图。
+- **顺带修掉一个真缺陷**：`lib/host/routes.js` 调了 `basename()` 却没从 `node:path` 导入。能走到的条件是
+  「工作区记录存在、但 `title` 为空」——`paths.js` 明确允许 title 为空，面板文档也把这条回退
+  （回退成目录名）写成功能，所以是真实的用户路径：命中时整个 `/api/memory/status` 抛 `ReferenceError`。
+  集成测试补了这条此前零覆盖的分支，并验证：去掉导入 ⇒ 该套件以 `basename is not defined` 变红。
+- **测试计数器不再谎报异步用例**：unit / memory-model 的 `test()` 是同步 helper，各自却有几条 async 回调——
+  它们过去先打印 `ok`、再打印汇总，然后才因未处理的 rejection 崩掉，"121 项通过"是一句可能为真的假话。
+  现在 ok 行与计数推迟到 promise settle，汇总前 `await Promise.all(pending)`。
+  负面对照（临时注入一条必失败的 async 用例）：修前打印汇总 `121 tests passed` 且 exit 1；修后两者都不打印。
+
+测试数 459 → **475**（架构套件 14 → 18，新增的四条里三条是上面那些哨兵）。
+本轮的完整验证：`npm test` = 17 个套件 / 475 项全绿；`lib/` 搬动与集成测试拆分各自的基线比对见上；
+每个新判据都有一次真红的负面对照。
 
 **作用域区挪到面板最底**
 

@@ -2,8 +2,8 @@
 
 来源：安装的 `@qoder-ai/qodercli` 包里的 `bundle/qodercli.js`（约 33 MB；用
 `npm root -g` 找到它，或设 `QODERCLI_BUNDLE` 直接指到文件）。字符串用 `_$d(base64)`
-＝ base64 异或 key `h74YFijkSnty` 混淆；解码脚本见 `test/inspect-qodercli.mjs`
-（以及生成候选串清单的 `test/dump-qodercli-strings.mjs`）。
+＝ base64 异或 key `h74YFijkSnty` 混淆；解码脚本见 `tools/inspect-qodercli.mjs`
+（以及生成候选串清单的 `tools/dump-qodercli-strings.mjs`）。
 
 **为什么必须看 CLI**：npm 包 `@qoder-ai/qoder-agent-sdk` 只做选项校验，路径/文件格式/提示词
 全在 CLI 里。SDK 的 `MemoryRoot.path` 注释就写着「Directory path on the machine running
@@ -151,7 +151,8 @@ readdir(dir).filter(n => n.endsWith('.md') && n !== 'MEMORY.md' && !n.startsWith
 - **Daily Memory Journal**：会话结束后追加当日条目。工具调用形如
   `action:"add", target:"daily", chat_id, content`，内容是项目符号列表，
   **最多 8 条、每条 ≤120 字符**。排除已在 `MEMORY.md`/`USER.md`/`AGENTS.md` 里的信息。
-  完整提示词（逐字解出，含候选清单、质量门槛与 EXCLUDE）见 README §24。
+  完整提示词（逐字解出，含候选清单、质量门槛与 EXCLUDE）见 README 的「日刊」一节
+  （`lib/memory/memory-prompt.js` 是唯一来源）。
 
   本插件的实现与原文的两处差异，都是刻意的：
 
