@@ -589,6 +589,86 @@ await test('the panel offers no write budget at all', async () => {
   assert.doesNotMatch(text, /undefined/)
 })
 
+await test('the update row states the verdict, offers only the verb that fits, and vanishes when checks are off', async () => {
+  // The Host runs git; the panel renders a verdict plus a button. `behind` is the ONLY actionable
+  // state, so it is the only one whose button applies — and `update.mode: off` must render no control
+  // at all, because there would be nothing behind it. This is the panel half of README §4.4; the git
+  // half is `test/update.test.mjs`.
+  const cases = [
+    {
+      update: { mode: 'check', status: 'behind', behind: 2, ahead: 0, current: '1a2b3c4', latest: '5d6e7f8' },
+      label: 'Update now',
+      action: 'apply',
+      says: /2 commit\(s\) behind/,
+    },
+    {
+      update: { mode: 'check', status: 'diverged', behind: 1, ahead: 1, current: '1a2b3c4', latest: '5d6e7f8' },
+      label: 'Check',
+      action: 'check',
+      says: /diverged from the remote/,
+    },
+    { update: { mode: 'off', status: 'disabled' }, label: null, action: null, says: /checks off/ },
+  ]
+  for (const option of cases) {
+    const posted = []
+    const registration = loadBundle(async (url, init) => {
+      if (init !== undefined) posted.push({ url: String(url), body: JSON.parse(init.body) })
+      return {
+        ok: true,
+        json: async () =>
+          String(url).includes('/status')
+            ? { ...STATUS, update: option.update }
+            : { ok: true, action: option.action, update: { ...option.update, status: 'updated' } },
+      }
+    })
+    const clientPlugin = registration.factory((specifier) => {
+      if (specifier === 'react') return React
+      throw new Error(`unexpected external ${specifier}`)
+    })
+    const { registrations, locale } = registerComponent(clientPlugin)
+    locale.setActive('en')
+    const { options: slotOptions, component } = registrations[0]
+    let renderer
+    await act(async () => {
+      renderer = TestRenderer.create(React.createElement(component, slotProps(locale, slotOptions)))
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    // By TEXT, not by position: the panel renders many `dshmem-field` rows, so "the last one" is the
+    // same positional-lookup trap this suite has hit before. `collectText(node)` walks the rendered
+    // INSTANCES — `node.props.children` here would be the raw React elements, whose text it cannot see.
+    const row = renderer.root.findAll(
+      (node) =>
+        String(node.props.className || '').split(' ').includes('dshmem-field') &&
+        collectText(node).includes('Plugin update'),
+    )[0]
+    assert.ok(row, `the update row must render for ${option.update.status}`)
+    assert.match(collectText(row), option.says)
+    const buttons = row.findAll((node) => node.type === 'button')
+    if (option.label === null) {
+      assert.equal(buttons.length, 0, 'checks off means no control at all')
+    } else {
+      assert.equal(buttons.length, 1)
+      assert.equal(collectText(buttons[0].props.children).trim(), option.label)
+      await act(async () => {
+        buttons[0].props.onClick()
+        await Promise.resolve()
+      })
+      assert.equal(posted.length, 1, 'exactly one write')
+      assert.equal(posted[0].url, '/api/memory/update')
+      assert.deepEqual(posted[0].body, { action: option.action })
+      // After an apply, the one thing still true has to be said: the RUNNING host half is old until
+      // the next `dsh web` start (there is no runtime reload).
+      if (option.action === 'apply') {
+        assert.match(collectText(renderer.toJSON()), /restart `dsh web`/)
+      }
+    }
+    renderer.unmount()
+  }
+})
+
 await test('the panel offers the two policy switches, and reports an env-pinned one', async () => {
   // Qoder's `auto_memory_policy` / `auto_dream`, editable. They are two toggles but ONE write, so the
   // Save is offered whenever either moved.
@@ -1709,7 +1789,7 @@ await test('the panel talks only to the /api/memory routes', () => {
   // but on its own truncation rather than on a stray path.
   const paths = [...source.matchAll(/['"](\/api\/memory\/[a-z-]+)/g)].map((match) => match[1])
   assert.ok(paths.length > 0)
-  const known = ['/api/memory/status', '/api/memory/file', '/api/memory/preview', '/api/memory/refresh', '/api/memory/flush', '/api/memory/trust', '/api/memory/switch', '/api/memory/budget', '/api/memory/scope', '/api/memory/mode', '/api/memory/generation']
+  const known = ['/api/memory/status', '/api/memory/file', '/api/memory/preview', '/api/memory/refresh', '/api/memory/flush', '/api/memory/trust', '/api/memory/switch', '/api/memory/budget', '/api/memory/scope', '/api/memory/mode', '/api/memory/generation', '/api/memory/update']
   for (const path of paths) {
     assert.ok(known.includes(path), `unexpected route ${path}`)
   }

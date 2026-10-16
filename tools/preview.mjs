@@ -49,6 +49,10 @@ const STATUS = {
   pauseAfterFailures: 3,
   writePolicy: 'memory-root',
   sandboxMode: 'workspace-write',
+  // The self-update row that ends the status block. It is rendered from `status.update`, so a fixture
+  // that omitted it would hide the row entirely — and the fixture exists to show the controls. This is
+  // the actionable verdict: two commits behind on `origin/main`, so the button offers `Update now`.
+  update: { mode: 'check', status: 'behind', behind: 2, ahead: 0, current: '1a2b3c4', latest: '5d6e7f8' },
   gate: { kind: 'custom', timeoutMs: 10000, onGateError: 'skip' },
   trust: { enabled: true, trusted: true, folder: 'C:\\proj', declared: ['C:\\proj'], remembered: [], folders: ['C:\\proj'] },
   memoryChange: {

@@ -185,6 +185,7 @@ await test('every route declares methods and a buffered body', async () => {
     '/api/memory/status',
     '/api/memory/switch',
     '/api/memory/trust',
+    '/api/memory/update',
   ])
   for (const route of routes.values()) {
     assert.ok(route.methods.length > 0, 'a route must declare at least one method')

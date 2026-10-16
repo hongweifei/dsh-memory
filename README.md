@@ -8,7 +8,7 @@
 | 版本 | `0.1.0`（**冻结**：做对齐本身不发布新版本，改动累积） |
 | 包名 | `@dsh-external/dsh-memory` |
 | 依据 | 真实 SDK（`@qoder-ai/qoder-agent-sdk@1.0.50`）**＋**本机 `qodercli` bundle 解码，不是文档推测 |
-| 测试 | **475 项全绿**（`npm test`，17 个套件）：unit 121 / integration 182（9 个主题套件）/ client 61 / memory-model 41 / memory-agent 19 / journal 20 / architecture 18 / discovery 9（+1 skipped）/ resolveMeta 4 |
+| 测试 | **503 项全绿**（`npm test`，18 个套件）：unit 121 / integration 183（9 个主题套件）/ client 63 / memory-model 41 / update 26 / journal 20 / architecture 18 / memory-agent 18 / discovery 9（+1 skipped）/ resolveMeta 4 |
 | 依赖 | 仅 `@deepseek-ai/schemastery`（真正的 `Config` schema，**不在公共 npm 上**）与 `picomatch`（排除规则；Qoder 自己也是这个库） |
 | 文档 | [代码结构与开发](docs/architecture.md)（模块放哪、怎么加东西、测试怎么跑）· [Qoder 记忆模型](docs/qoder-memory-model.md)（解出的原件）· [记忆层归属](docs/memory-layers.md)（哪些层归 harness）· [CHANGELOG](CHANGELOG.md)（开发流水与每条修复的反证） |
 
@@ -142,6 +142,12 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
       # files:                 # custom 模式下替代自动发现
       #   - { id: conventions, path: D:/knowledge/CONVENTIONS.md, required: true }
       # onResult: !!js '(r) => console.log("memory", r.status)'
+    update:                   # 自更新（Qoder 没有这个面，是本插件独有的运维开关，见 §4.4）
+      mode: check             # off | check | auto
+      dir: ''                 # 空＝插件自己的包根（本检出的根）
+      remote: origin
+      branch: ''              # 空＝当前 HEAD 所在分支
+      timeoutMs: 10000        # 单条 git 命令的超时
 ```
 
 `shouldGenerate` 与 `onResult` 用 YAML 的 `!!js` 表达式传入（Loader 会求值成真正的函数）。
@@ -201,6 +207,35 @@ Qoder 用「品牌前缀 + 名字」拼环境变量，布尔词汇是 `1/true/ye
 
 **环境变量优先于配置**，且只有这四个开关能从环境进来。被环境固定的开关会在面板里注明
 （按了也不会生效的开关比没有这个开关更糟）。
+
+### 4.4 自更新（`update.*`）
+
+这个插件是**装成指向本检出的软链**的（`link:<本仓库路径>`），所以"升级插件"就是**让这个检出快进**。
+插件自己会做这件事，但**只做快进**，绝不合并没有的提交：
+
+| `mode` | 行为 |
+|---|---|
+| `off` | 一次 git 都不跑（面板里那一行也不显示） |
+| `check`（默认） | 启动时 `git fetch` 一次，判决结果报到面板与 `/memory`；**要不要应用由你点** |
+| `auto` | 启动时检查，**只在"落后且工作树干净"时**直接 `git pull --ff-only` |
+
+- **判决词表**（面板与 `/memory-update status` 同源）：`up-to-date` / `behind` / `ahead` / `diverged` /
+  `unavailable`（不是仓库、git 不在、超时）。面板上只显示"落后几个提交"和短哈希，原始状态与原因在悬停提示里。
+- **工作树脏一律拒绝**：有未提交改动时**不会拉**，返回 `refused`，面板与命令都明说原因——
+  自动更新永远不该把你的本地改动卷进一次合并。
+- **只 `--ff-only`**：本地有分叉（`diverged`）时拒绝而不是合并或变基。远程是 `origin`、分支默认取
+  **当前 HEAD 所在分支**（detached HEAD 时报 `unavailable`，不猜）。
+- **生效时机**：宿主半（`lib/`）**要下次 `dsh web` 启动才用上新代码**——harness 没有运行时重载
+  （`plugin_manager` 只有 `install_bundle` / `list_plugins` / `list_bundles`）。所以拉成功后面板会多一行
+  「重启后生效」；浏览器半刷新页面即可。
+- **怎么用**：面板里那行有按钮（`behind` 时是「立即更新」，否则是「检查更新」）；
+  命令行是 `/memory-update [status|check|apply]`；两者都打 `POST /api/memory/update`。
+- **私有仓库/需要凭据**：git 以**非交互**方式跑（`GIT_TERMINAL_PROMPT=0`、`GIT_ASKPASS=''`、
+  `GCM_INTERACTIVE=never`、不开 shell），认证不上就报 `unavailable`，**不会弹窗卡住启动**。
+- `dir` / `remote` / `branch` 是给"检出在别处"或"上游不叫 origin"的情况留的；平时全部留空即可。
+
+> 这不是 Qoder 的契约项——Qoder 的 SDK 里没有自更新。放在这里是因为**插件的安装形态就是软链**，
+> 没有包管理器负责升级它；开关默认 `check` 而不是 `auto`，因为拉代码是**动你磁盘上文件**的操作。
 
 ## 5. 存储布局（`$DSH_HOME`）
 
@@ -367,6 +402,7 @@ pass 内部**多写一个文件——pass 本来就在跑，所以开启日刊�
 | `/memory-budget [status\|<tokens>]` | **注入上限**（§8.4）：与面板同一个写入器 |
 | `/memory-trust [allow\|deny\|list] [folder]` | 目录信任（写入 `$DSH_HOME/trusted-folders.json`） |
 | `/memory-imports [status\|allow\|deny]` | **会话级**外部导入授权（授权后立即重新加载） |
+| `/memory-update [status\|check\|apply]` | **自更新**（§4.4）：`check` 真去 `fetch`，`apply` 只在落后且工作树干净时快进 |
 | `/memory-delete <scope>:<path>` | 删除一个记忆文件 |
 | `/memory-refresh` | 重新加载记忆（外部编辑后手工拉取） |
 | `/memory-resume` | 清除「连续失败暂停」（Qoder 没有恢复路径，这是唯一出口） |
@@ -375,8 +411,12 @@ pass 内部**多写一个文件——pass 本来就在跑，所以开启日刊�
 ### 8.4 设置面板
 
 面板从上到下的区块顺序：状态行（插件/**模式（可编辑）**/生成/消费/**全局作用域（可编辑）**/巩固/
-闸门/**信任＋授权按钮**/在飞任务）→ **注入预算区**（注入上限**可编辑**；注入预览）→
+闸门/**信任＋授权按钮**/在飞任务/**自更新判决＋按钮**）→ **注入预算区**（注入上限**可编辑**；注入预览）→
 活动区（最近生成/巩固 + 告警）→ 编辑器（作用域下拉 + 文件名 + 保存/重载/等待）→ **作用域区** → 命令提示。
+
+**自更新那一行是状态块的末尾**（它说的是这份安装，不是这一页在描述的记忆；`update.mode: off` 时整行不显示）：
+落后时按钮是「立即更新」，否则是「检查更新」；`behind` 只显示落后几个提交与短哈希，原始状态/拒绝原因进悬停提示；
+刚拉成功会多一行「重启 `dsh web` 后生效」（§4.4）。
 
 **面板里能改的六项**：**模式**（`native`/`custom`）、**全局作用域**、**注入上限**，以及**三个策略开关**
 （自动记录 + 记忆巩固 + 日刊）——前两项各算一项，开关是三张控件、一个保存。
@@ -407,7 +447,7 @@ Host 把真实消费跑一遍再**丢掉结果**，返回 `step.action`（`silen
 两件如实标注的限制：harness 的 `FsInfo` 只有 `version/type/size`、**没有修改时间**，所以显示的是占用大小；
 harness 也**没有"在文件管理器里打开"的能力**（曾实现过，按用户要求撤掉）。
 
-**Host 路由**（`/api/memory/*`，12 条，客户端字面量必须与之完全一致）：
+**Host 路由**（`/api/memory/*`，13 条，客户端字面量必须与之完全一致）：
 
 | 路由 | 用途 |
 |---|---|
@@ -417,6 +457,7 @@ harness 也**没有"在文件管理器里打开"的能力**（曾实现过，按
 | `refresh` / `flush` | 重新加载 / 等落盘 |
 | `trust` | 目录信任的授予与撤销 |
 | `switch` | 会话级模式（读要会话，写要会话） |
+| `update` | 自更新（§4.4）：`{action:'check'\|'apply'}`，别的输入是 400 |
 | `budget` / `generation` / `scope` / `mode` | 面板可写项（`budget` 收正整数或 `null`，`null`＝清掉上限） |
 
 ## 9. 与 Qoder 的契约映射
@@ -439,6 +480,7 @@ harness 也**没有"在文件管理器里打开"的能力**（曾实现过，按
 | Daily Memory Journal | `action:"add"` + `target:"daily"`（§6.6） |
 | `MEMORY_HEADLESS` 等环境变量 | `DSH_MEMORY_*`，同一套布尔词汇，环境优先 |
 | 删除记忆 | 模型工具 / `memory` 工具 / `/memory-delete` / 面板删除按钮 |
+| ——（Qoder 没有自更新） | `update.*` + `/memory-update` + `POST /api/memory/update`：检出是软链装的，没有包管理器管升级（§4.4） |
 
 ## 10. 与 Harness 的集成约束
 
@@ -509,6 +551,8 @@ npm 安装**——"测试全绿"可能验的是旧版本。`test/support/harness
 - **`projectKey` 有损**（§10.2）：`D:\a-b` 与 `D:\a\b` 共用一个记忆目录——这是 harness 自己的取舍，本插件继承它。
 - **harness 没有文件修改时间、也没有"在文件管理器里打开"**，所以面板只能显示占用大小。
 - **日刊对 `list`/`read`/`search` 不可见**（§6.6）：刻意的取舍，不是遗漏。
+- **自更新只做快进**（§4.4）：工作树脏、本地分叉、detached HEAD、认证不上都**拒绝**而不是想办法成功；
+  拉下来的宿主代码**要下次 `dsh web` 启动才生效**（harness 没有运行时重载），面板会明说这一点。
 
 ## 12. 开发
 
@@ -518,7 +562,7 @@ npm 安装**——"测试全绿"可能验的是旧版本。`test/support/harness
 - 常用命令：
 
 ```powershell
-npm test                 # 全部 475 项（一个套件一个进程）
+npm test                 # 全部 503 项（一个套件一个进程）
 npm run test:unit        # 只跑路径含 unit 的套件
 npm run test:integration # 只跑 integration-* 套件
 npm run preview          # 渲染面板预览到 tools/preview.html

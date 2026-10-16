@@ -77,15 +77,20 @@ const LAYERS = [
   // The rules, in their own leaf layer so BOTH the loader path and the write path can read them: the
   // write path has to be able to ask "would the plugin accept this?" before persisting, and a
   // configuration the plugin rejects does not fail to apply — it makes the plugin fail to activate.
-  ['config/config-rules.js', 'config/scopes.js'],
-  ['config/config.js', 'core/tokens.js', 'core/fs.js', 'core/paths.js', 'memory/memory-file.js', 'memory/memory-edit.js', 'memory/journal.js'],
+  ['config/config-rules.js', 'config/scopes.js', 'config/env.js'],
+  ['config/config.js', 'core/tokens.js', 'core/fs.js', 'core/paths.js', 'core/update.js', 'memory/memory-file.js', 'memory/memory-edit.js', 'memory/journal.js'],
   // The write path sits ABOVE the schema on purpose: to refuse a configuration before persisting it,
   // it must ask the same question `apply()` asks, which means the real schema and the real rules.
   // A hand-rolled approximation here is what missed the `native` default (see `judgeConfig`).
   ['config/config-write.js'],
   ['memory/render.js', 'memory/memory-pass.js', 'memory/memory-prompt.js', 'memory/memory-search.js', 'memory/imports.js', 'memory/excludes.js', 'session/trust.js', 'memory/jit.js', 'memory/transcript.js', 'memory/failure-pause.js', 'session/memory-switch.js', 'session/project-scopes.js', 'memory/commands-report.js'],
+  ['host/http.js', 'host/update-surface.js'],
   ['pipeline/memory-agent.js', 'pipeline/consumption-plan.js'],
   ['pipeline/consumption.js', 'pipeline/generation.js', 'pipeline/dream.js'],
+  // The per-turn trigger COMPOSES the generation scheduler, so it sits above it while still
+  // belonging to the pipeline: it owns the `turn/end` subscription and the turn counters, which
+  // is what keeps `index.js` wiring rather than a handler.
+  ['pipeline/turn-trigger.js'],
   ['host/service.js', 'host/tools.js', 'host/routes.js', 'host/commands.js', 'host/consumption-seam.js', 'host/config-route.js'],
   ['index.js'],
 ]

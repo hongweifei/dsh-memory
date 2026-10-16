@@ -28,6 +28,52 @@
 
 ### 新增
 
+**自更新：启动检查 + 手动应用 + `auto` 开关（2026-10-16）**
+
+- 起因：本插件在 profile 里是**软链安装**（`@dsh-external/dsh-memory: link:<本仓库路径>`），所以"升级插件"就是让这个检出
+  快进——没有任何包管理器负责它。新增 `update.*` 配置与 `lib/core/update.js`，只做**快进**，
+  绝不合并没有的提交。
+- 默认 `check` 而不是 `auto`：`auto` 会**动你磁盘上的文件**。`off` 时一次 git 都不跑，
+  面板里那一行也不显示；`check` 把判决说出来，要不要应用由你点。
+- 判决词表：`up-to-date` / `behind` / `ahead` / `diverged` / `unavailable`（不是仓库、没有 git、超时）。
+  只有 `behind` 才可能应用。
+- 四种局面**拒绝而不是想办法成功**：工作树脏（`refused`，**且不拉**）、本地分叉（只 `--ff-only`）、
+  detached HEAD（分支**不猜**，报 `unavailable`）、认证不上。
+- git **非交互**地跑：`execFile` 不开 shell，环境里 `GIT_TERMINAL_PROMPT=0` / `GIT_ASKPASS=''` /
+  `GCM_INTERACTIVE=never`，单条命令超时 `UPDATE_TIMEOUT_MS = 10_000`——私有仓库认证不上就报状态，
+  不会弹窗、不会卡住启动。
+- 一个动词表、一份文字，三个面共用（`lib/host/update-surface.js`）：`POST /api/memory/update`
+  （收 `{action:'check'|'apply'}`，别的输入 400；`ok` 只在真拉成功时为 true）、
+  `/memory-update [status|check|apply]`、`/memory` 与面板状态块**末尾那一行**（`mode: off` 时整行不显示）。
+- 拉成功后的**留存状态**是 `up-to-date` + `justUpdated: true`，不是 `behind: 1`：留着落后计数会让
+  `/status` 要求一次刚刚做完的更新；而"宿主半要下次 `dsh web` 启动才生效"这个事实仍得有人说出来
+  （harness 的 `plugin_manager` 只有 `install_bundle` / `list_plugins` / `list_bundles`，**没有运行时重载**）。
+  client 半刷新页面即可。
+- 启动检查**不 await**（慢远端不该拖住插件接线），但一定写日志：没人提的更新没人会装；失败只 warn，
+  远端坏了不该让用户失去记忆功能。
+
+验证：`npm test` 18 个套件 / **503 项全绿**；新增 `test/update.test.mjs` **26 项**——判决表、假 runner 的
+九种局面（不是仓库/游离 HEAD/取回失败/落后/领先/分叉/缺远端跟踪引用/干净快进/脏树拒绝/无事可做不拉/
+拉取失败/mode off 零调用），以及**真实离线 git 仓库**（bare origin + clone + 多推一个提交：
+落后 → 应用 → 已最新、脏树被拒且工作树存活、面板与 `/memory-update` 的面、`mode: off` 一处 git 都不跑）。
+三条负面对照注入后跑 `test/update.test.mjs`，全部真红、并已逐条还原：
+① 关掉脏树拒绝（`requireClean !== false` → `=== "yes"`）⇒ 「a DIRTY tree refuses, and never pulls」红；
+② 拉时去掉 `--ff-only` ⇒ 「a clean fast-forward pulls, and reports both ids」红；
+③ `auto` 不等 `behind` 判决就直接应用 ⇒ 「auto mode leaves an ahead or diverged checkout alone」红在
+`2\t0 must not re-check` 那条断言上（**多出的那次 `fetch`** 才是那个外层判断的作用：它省掉一次网络往返）。
+基线与三个变体各自跑在**新拷贝**上（`node_modules` 用 junction），所以红不是上一轮注入的残留。
+面板那一行也补了此前缺的用例（`test/client.test.mjs` +1，client 62 → 63）：三种局面——`behind` 才给
+「立即更新」并投 `{action:'apply'}`、`diverged` 只给「检查更新」并投 `{action:'check'}`、`mode: off`
+一个控件都不给；那一行**按文字定位**（`dshmem-field` 有 19 行，按位置取"最后一行"是这个套件踩过的坑）。
+同样做了负面对照：三个变体分别跑 `test/client.test.mjs`，全部真红、并已逐条还原（`lib/client.js`
+的 `git hash-object` 前后都是 `c675ac3f`）——`mode: off` 仍渲染控件 ⇒ 「checks off means no control
+at all」红；非 `behind` 判决仍投 `apply` ⇒ 请求体断言红（`{action:'apply'}` vs `{action:'check'}`）；
+按钮恒为「立即更新」⇒ 标签断言红（`'Update now'` vs `'Check'`）。
+顺带按预算拆模块：`host/http.js`（39 行）、`host/update-surface.js`（73）、`pipeline/turn-trigger.js`（88，
+`turn/end` 订阅与回合计数从 `index.js` 搬出）、`config/env.js`（93），`test/architecture.test.mjs` 的
+`LAYERS` 同步登记。文档同步：README §4.1/§4.4/§8.3/§8.4/§9/§11/§12、`docs/architecture.md`
+（模块数与分层表、体积现状、第三条数据流、套件数）、`docs/images/` 三张截图重出。
+
 **写入预算整块删除——Qoder 没有这两个字段（2026-10-16）**
 
 - `generation.maxWrites` / `maxWriteBytes` 是本插件自己的"防跑飞"闸门（Qoder 的 SDK 与 qodercli

@@ -31,14 +31,14 @@ lib/client.js    浏览器半：设置面板 + 对话页的记忆按钮（一个
 
 | 目录 | 模块数 | 职责 |
 |---|---|---|
-| `lib/core/` | 4 | 谁都能用的原语：`constants` `tokens` `fs` `paths` |
-| `lib/config/` | 4 | 配置词汇与它的写入路径：`config-rules` `scopes` `config` `config-write` |
+| `lib/core/` | 5 | 谁都能用的原语：`constants` `tokens` `fs` `paths` `update`（自更新的 git 管道） |
+| `lib/config/` | 5 | 配置词汇与它的写入路径：`config-rules` `scopes` `env` `config` `config-write` |
 | `lib/memory/` | 13 | 记忆领域：`memory-file` `memory-edit` `journal` `render` `memory-pass` `memory-prompt` `memory-search` `imports` `excludes` `jit` `transcript` `failure-pause` `commands-report` |
 | `lib/session/` | 3 | 谁在作用域内：`trust` `memory-switch` `project-scopes` |
-| `lib/pipeline/` | 5 | 两个半的编排：`memory-agent` `consumption-plan` `consumption` `generation` `dream` |
-| `lib/host/` | 6 | harness 看到的面：`service` `tools` `routes` `commands` `consumption-seam` `config-route` |
+| `lib/pipeline/` | 6 | 两个半的编排：`memory-agent` `consumption-plan` `consumption` `generation` `dream` `turn-trigger` |
+| `lib/host/` | 8 | harness 看到的面：`service` `tools` `routes` `commands` `consumption-seam` `config-route` `http` `update-surface` |
 
-合计 35 个 host 模块 + `index.js`（接线）+ `client.js`（浏览器产物）= `lib/` 下 37 个 `.js`。
+合计 40 个 host 模块 + `index.js`（接线）+ `client.js`（浏览器产物）= `lib/` 下 42 个 `.js`。
 
 目录名是**职责**，不是层号：`core/` 里同时躺着 L0 的 `constants` 和 L2 的 `paths`。真正的层
 是下面那张表，守卫按**完整路径**判层。
@@ -50,22 +50,29 @@ lib/client.js    浏览器半：设置面板 + 对话页的记忆按钮（一个
 | 层 | 模块 |
 |---|---|
 | L0 | `core/constants` |
-| L1 | `config/config-rules` `config/scopes` |
-| L2 | `config/config` `core/tokens` `core/fs` `core/paths` `memory/memory-file` `memory/memory-edit` `memory/journal` |
+| L1 | `config/config-rules` `config/scopes` `config/env` |
+| L2 | `config/config` `core/tokens` `core/fs` `core/paths` `core/update` `memory/memory-file` `memory/memory-edit` `memory/journal` |
 | L3 | `config/config-write` |
 | L4 | `memory/render` `memory/memory-pass` `memory/memory-prompt` `memory/memory-search` `memory/imports` `memory/excludes` `session/trust` `memory/jit` `memory/transcript` `memory/failure-pause` `session/memory-switch` `session/project-scopes` `memory/commands-report` |
-| L5 | `pipeline/memory-agent` `pipeline/consumption-plan` |
-| L6 | `pipeline/consumption` `pipeline/generation` `pipeline/dream` |
-| L7 | `host/service` `host/tools` `host/routes` `host/commands` `host/consumption-seam` `host/config-route` |
-| L8 | `index.js` |
+| L5 | `host/http` `host/update-surface` |
+| L6 | `pipeline/memory-agent` `pipeline/consumption-plan` |
+| L7 | `pipeline/consumption` `pipeline/generation` `pipeline/dream` |
+| L8 | `pipeline/turn-trigger` |
+| L9 | `host/service` `host/tools` `host/routes` `host/commands` `host/consumption-seam` `host/config-route` |
+| L10 | `index.js` |
 
-两个位置是刻意的、不是随手放的：
+三个位置是刻意的、不是随手放的：
 
 - **`config/config-write` 排在 schema 之上**：它必须在**落盘之前**回答"插件会不会接受这份配置"，
   所以要问 `apply()` 问的同一个问题——真的 `Config` schema 加真的 `validateMemoryConfig`。
   手搓一份近似值，正是当年漏掉 `mode` 默认值（不写就是 `native`）的原因。
-- **`config-rules` / `scopes` 是叶子（L1）**：loader 路径、写入路径、路由、面板读的是同一份规则，
+- **`config-rules` / `scopes` / `env` 是叶子（L1）**：loader 路径、写入路径、路由、面板、环境覆写读的是同一份规则，
   不存在"第二份规则慢慢和第一份漂开"。
+- **`host/http` 与 `host/update-surface` 在 L5，比 `host/service` 低四层**：`http` 是"读 JSON body / 回
+  JSON 响应"这类与领域无关的胶水，`update-surface` 是自更新的**动词解析与那行文字**——两者都只依赖
+  `core/update` 的返回值形状，不依赖 service，所以路由、命令、面板三条调用点共用它们，而不是各写一份。
+- **`pipeline/turn-trigger` 在 `generation` 之上（L8）**：它**组合**生成调度器，自己持有 `turn/end` 订阅与
+  回合计数——正是这一点让 `index.js` 保持"接线"而不是变成一个事件处理器。
 
 其余被守卫强制的不变量：
 
@@ -81,11 +88,12 @@ lib/client.js    浏览器半：设置面板 + 对话页的记忆按钮（一个
 
 | 文件 | 预算 | 当前 |
 |---|---|---|
-| 每个 host 模块 | 逻辑 ≤ 500 行 | 最大 `host/routes.js` 约 498 |
-| `index.js` | ≤ 300 行（接线） | 300 |
-| `lib/client.js` | 逻辑 ≤ 870 行、内联数据 ≤ 260 行 | 逻辑 838、内联数据 216 |
+| 每个 host 模块 | 逻辑 ≤ 500 行 | 最大 `host/routes.js` 489 |
+| `index.js` | ≤ 300 行（接线） | 273 |
+| `lib/client.js` | 逻辑 ≤ 870 行、内联数据 ≤ 260 行 | 逻辑 818、内联数据 226 |
 
-host 的 500 行**有牙齿**：`routes.js` 撞线时拆出了 `config-route.js`，`index.js` 撞线时压缩了接线。
+host 的 500 行**有牙齿**：`routes.js` 撞线时拆出了 `config-route.js`、`http.js`，`commands.js` 撞线时
+拆出了 `update-surface.js`，`index.js` 撞线时把每回合的订阅搬去 `pipeline/turn-trigger.js`。
 client 的那条线是**防漂移**，不是"要加功能先删点东西"：它的上限设在当前形状之上，理由与裁定过程
 在 [`../CHANGELOG.md`](../CHANGELOG.md) 的「体积预算」一节。
 
@@ -93,18 +101,27 @@ client 的那条线是**防漂移**，不是"要加功能先删点东西"：它�
 决策被写成纯函数（`baselineFor` / `planInjection`），两个调用方只差一件事——真实投影**应用并记录**
 结果，面板预览**只读不写**。每个会话的注入基准也放在这里（`readConsumptionState` / `writeConsumptionState`）。
 
-## 5. 两条数据流
+## 5. 三条数据流
 
 **生成（generation）**：`session/event turn/end` →（会话开关、间隔门、闸门、失败暂停）→
 `pipeline/generation` 组装转录（`memory/transcript` 的游标）→ `pipeline/memory-agent` 跑工具循环
 （`memory/memory-pass` 执行 `memory_write` / `memory_edit` / `memory_delete` 与 `target: daily` 的日刊）
-→ 结果经 `memory/commands-report` 汇总，`host/service` 存下最近一次。
+→ 结果经 `memory/commands-report` 汇总，`host/service` 存下最近一次。那次 `turn/end` 订阅与回合计数
+在 `pipeline/turn-trigger` 里。
 
 **消费（consumption）**：`agent/pre-step` →（会话开关）→ `pipeline/consumption` 发现文件
 （`memory/excludes` 排除、`memory/imports` 展开 `@`、`memory/jit` 判条件加载、`session/trust` 过信任门）
 → `memory/render` 在 `consumption.maxTokens` 下投影整块并逐文件哈希（**不设上限**——即该键缺席，
 Qoder 的默认——时整块直接注入，丢弃/截断那套逻辑根本不进）→ 未变则静默、变了才发增量。
 `pipeline/consumption-plan` 把"下一步会怎样"抽成纯函数，供面板预览只读复用。
+
+**自更新（self-update）**：插件装成**指向本检出的软链**，所以"升级"就是让这个检出快进。
+`index.js` 启动时（`update.mode !== 'off'`）调一次 `core/update` 的 `createUpdateService`：
+`fetch` → `rev-list --left-right --count` → 判决（`up-to-date|behind|ahead|diverged`）。
+`mode: auto` 且 `behind` 且**工作树干净**时才 `pull --ff-only`；脏树一律 `refused` 且**不拉**。
+结果留在 service 里，`host/service` 的状态载荷带给面板与 `/memory`，面板按钮与 `/memory-update`
+走同一个 `host/update-surface` + `POST /api/memory/update`。**host 半要下次 `dsh web` 启动才用上新代码**
+（没有运行时重载），面板会明说这一点；client 半刷新即可。
 
 ## 6. 加东西时的清单
 
@@ -130,7 +147,7 @@ npm run test:integration
 
 - **一个套件一个进程**。这不是风格问题：`DSH_HOME`、`DSH_MEMORY_DREAM`、被 patch 的
   `console.error` 都是进程级全局，合并跑会互相污染；runner 也不解析套件内部，只按**退出码**判成败。
-- `test/run.mjs` **递归**发现 `test/**/*.test.mjs`（17 个套件 / 475 项），逐个子进程执行，
+- `test/run.mjs` **递归**发现 `test/**/*.test.mjs`（18 个套件 / 503 项），逐个子进程执行，
   汇总各套件自己打印的计数；任一非零即失败。
 - `node test/*.test.mjs` 这类写法**跑不起来**（PowerShell 不给原生命令展开通配符；会展开的 shell 里
   node 只认第一个入口）。文档里凡是批量命令，先真跑一遍再写进去。
@@ -142,7 +159,8 @@ npm run test:integration
 test/
   run.mjs                  runner
   *.test.mjs               套件：architecture / unit / client / discovery / resolve-meta /
-                           journal / memory-agent / memory-model / integration-*（9 个主题）
+                           journal / memory-agent / memory-model / update /
+                           integration-*（10 个主题）
   support/                 公共助手：harness-env（定位 harness 与安装）、integration-harness（替身与夹具）
 tools/                     开发工具：preview / shots / png-probe / inspect-qodercli /
                            inspect-session / dump-qodercli-strings / composer

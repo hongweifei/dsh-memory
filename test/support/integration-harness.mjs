@@ -373,7 +373,11 @@ export async function callRoute(routes, path, init) {
 }
 
 export const loadConfig = (raw) => {
-  const result = Config['~standard'].validate(raw)
+  // Self-update is switched OFF in fixtures: a check shells out to `git` and fetches a remote, and
+  // no test may do that against the real checkout. `test/update.test.mjs` opts in with its own
+  // `update` block, pointed at a temporary repository it builds itself.
+  const merged = { ...raw, update: { mode: 'off', ...(raw?.update ?? {}) } }
+  const result = Config['~standard'].validate(merged)
   assert.equal(result.issues, undefined, `config rejected: ${JSON.stringify(result.issues)}`)
   return result.value
 }
