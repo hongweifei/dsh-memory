@@ -28,6 +28,60 @@
 
 ### 新增
 
+**补齐 Qoder 的另外两道巩固闸门：会话数与扫描节流（2026-10-16）**
+
+- 起因：Qoder 的 AutoDream 有**三道**闸门，本插件此前只移植了一道（`minHours`）。解码
+  `qodercli` bundle 得到原文默认值 `Akn={enabled:!1,minHours:24,minSessions:5,scanThrottleMinutes:10}`，
+  以及 `tryRunDream` 里**有先后顺序**的判定：先按 `hoursSince>=minHours` 滤根 → 再查扫描节流
+  （`[AutoDream] scan throttle; last scan was …s ago`）→ 才去扫会话工件 → 再把
+  `t.length<minSessions` 的根报 `[AutoDream] skip <scope> root; … need <n>` 丢掉 → 抢
+  `<root>/.consolidate-lock` → 才真的跑。用户裁定「补齐 Qoder 的两道闸门」。
+- 新增两个配置键（**默认值照抄 Qoder**）：`generation.dream.minSessions: 5`、
+  `generation.dream.scanThrottleMinutes: 10`；`0` 关掉任意一道（与 `pauseAfterFailures: 0` 同一套拼写）。
+  `enabled` 仍**默认 false**——它多花一次模型调用，是否开启是用户的刻意选择，这与 Qoder 把 AutoDream
+  压在 rollout 旗标后面是同一个理由。
+- **会话数不从 Qoder 的工件目录数**（这是与 Qoder 唯一的语义偏离，且是有意的）：Qoder 数的是它自己
+  `session-artifact` 目录里 mtime 晚于该根上次巩固的 `.jsonl`；本插件改用 Harness 自己的两个服务——
+  `ctx.get('sessions').list()`（活会话）与 `ctx.get('sessionPersistence').list()`（已落盘），各取
+  `.header`、**按 id 去重**（活的那份赢）、按 `projectKey(header.cwd)` 只数本项目的、**排除问的那次会话**、
+  比 `header.createdAt > since`。理由是（a）本插件的 `fs` 接缝**拿不到 mtime**——本地 `fs.stat` 只回
+  `{version,type,size}`，而 `version` 是 `dev:ino:size:mtimeNs:ctimeNs` 拼出的不透明串；（b）布局是
+  另一个子系统的私有实现；（c）`dsh-workspace` 自己索引项目会话用的就是这条缝。
+  代价写在 README §10.5：计数口径是**创建时间**，所以"被续接命中的老会话"不算新会话。
+- **两个服务都不在时门是不可满足**：不巩固，并把"数不出来"的原因报出去——不是当作"数够了"。
+- 扫描节流是**每调度器实例的内存状态**（Qoder 的 `lastSessionScanAt` 同样是 per-process）：只有在真去扫
+  会话那一步才推进；`0` 表示每次 `turn/end` 都数。它**不落盘**，进程重启后第一次照常扫。
+- 按体积预算拆模块：`lib/pipeline/dream.js` 569 → 397 行，三道闸门搬进新的
+  `lib/pipeline/dream-gate.js`（193 行：`dreamLastRun` / `dreamDueRoots` / `dreamDue` / `dreamScanDue` /
+  `dreamSessionRecord` / `dreamSessionKey` / `countDreamSessions` / `listDreamSessions`），它只吃调用方给的时钟、
+  上次运行时间与会话 header，所以能不起模型、不碰文件系统地测；`dream.js` 只留机制（锁、状态文件、真正的 pass）。
+  `test/architecture.test.mjs` 的 `LAYERS` 把 `pipeline/dream-gate.js` 登记进 L6。
+
+验证：`npm test` 18 个套件 / **513 项全绿**（`test/memory-model.test.mjs` 41 → 46、
+`test/integration-dream.test.mjs` 8 → 12）。新增的用例覆盖：判决表与节流窗口（含"窗口末尾那一毫秒"、
+`0` 关闸）、按 id 合并两个注册表（重复 id 只算一次、活的 header 赢）、数当前项目的新会话且不数问的那次、
+`createdAt` 恰好等于上次巩固时**不算**新会话、损坏的上次运行时间当作从未跑过、以及四条真跑 pass 的
+集成用例（会话数不够不巩固；节流窗口内的第二回合不重扫；没有会话注册表时不巩固并报告；默认值确实是 5）。
+`test/support/integration-harness.mjs` 补了会话注册表替身（`provideSessions`）。
+
+负面对照：`dream-gate-mutants.mjs` 在**新拷贝**上逐条注入（`node_modules` 用 junction），
+1 条基线 + 9 个变体：基线 46 条用例全过、退出 0；9 个变体全部退出码非零、且死在预期的那条用例上
+（脚本自己核对栈帧所在用例与"第 N 条 ok"的序号，两者一致）：
+① 数进问的那次会话 ⇒ 「the session gate counts new sessions of one project, never the asker」红；
+② 取消项目过滤 ⇒ 同一条红；③ `>` 改成 `>=`（把边界算成新会话）⇒ 同一条红；④ 损坏时间当新鲜 ⇒
+「a corrupt timestamp is treated as never run」红；⑤ 节流窗口末尾改晚一毫秒 ⇒
+「the session scan is throttled only inside its window」红；⑥ 去掉会话数比较 ⇒
+「a project that has produced fewer sessions than the gate needs does not consolidate」红；
+⑦ 跳过扫描节流 ⇒ 「the session scan runs once per throttle window」红；⑧ 注册表缺席时当作满足 ⇒
+「no session registry at all means no consolidation, and it is reported」红；⑨ 默认 `minSessions` 改成 0 ⇒
+同⑥那条红。其中一次注入暴露出**对照表自己写错了名字**：取消项目过滤其实由
+「…counts new sessions of one project, never the asker」那条用例钉住（它的 fixture 里就有别的项目的会话），
+而「the project of the asking session is what the gate filters on」只测键的推导、根本不会红——已更正。
+同理，套件里的用例序号此前靠一条 `^test` 锚定的正则数，漏掉了一条缩进在 `if` 里的声明
+（`test/memory-model.test.mjs:144`），已改成逐行取第一个单引号串。
+文档同步：README §4.1 配置示例与 §10.5（新增"巩固的会话数从哪来"）、§9 契约表的 AutoDream 行、
+`docs/architecture.md`（模块数 40 → 41、分层表、体积现状与拆模块记录、生成数据流里的三道闸门、套件数）。
+
 **自更新：启动检查 + 手动应用 + `auto` 开关（2026-10-16）**
 
 - 起因：本插件在 profile 里是**软链安装**（`@dsh-external/dsh-memory: link:<本仓库路径>`），所以"升级插件"就是让这个检出

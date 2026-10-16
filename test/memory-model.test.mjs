@@ -40,12 +40,19 @@ import {
   DREAM_LOCK_FILE,
   DREAM_LOCK_STALE_MS,
   createDreamScheduler,
-  dreamDue,
   dreamLockHeld,
   dreamLockPath,
   dreamStatePath,
   parseDreamLock,
 } from '../lib/pipeline/dream.js'
+import {
+  countDreamSessions,
+  dreamDue,
+  dreamDueRoots,
+  dreamScanDue,
+  dreamSessionKey,
+  listDreamSessions,
+} from '../lib/pipeline/dream-gate.js'
 
 let passed = 0
 /** Cases whose callback returned a promise; awaited before the summary below. */
@@ -288,6 +295,86 @@ test('no roots means nothing to consolidate', () => {
 test('minHours 0 consolidates on every opportunity', () => {
   const now = 1_000_000_000
   assert.equal(dreamDue({ [ROOT]: now }, [ROOT], 0, now), true)
+})
+
+test('dreamDueRoots hands back the roots themselves, not only a verdict', () => {
+  const now = 1_000_000_000
+  const roots = [
+    { id: 'user', path: ROOT },
+    { id: 'project', path: 'C:\\other' },
+  ]
+  const state = { [ROOT]: now - 1 * HOUR, 'C:\\other': now - 48 * HOUR }
+  assert.deepEqual(
+    dreamDueRoots(state, roots, 24, now).map((root) => root.id),
+    ['project'],
+  )
+  assert.deepEqual(
+    dreamDueRoots(state, roots, 0, now).map((root) => root.id),
+    ['user', 'project'],
+  )
+  assert.deepEqual(
+    dreamDueRoots(undefined, roots, 24, now).map((root) => root.id),
+    ['user', 'project'],
+  )
+  assert.deepEqual(dreamDueRoots(state, [], 24, now), [])
+})
+
+test('the session scan is throttled only inside its window', () => {
+  const now = 1_000_000_000
+  assert.equal(dreamScanDue(0, now, 10), true, 'a process that never scanned may scan')
+  assert.equal(dreamScanDue(now - 9 * 60 * 1000, now, 10), false, 'nine minutes is inside the window')
+  assert.equal(dreamScanDue(now - 10 * 60 * 1000, now, 10), true, 'the window ends inclusively')
+  assert.equal(dreamScanDue(now - 1, now, 0), true, 'zero switches the throttle off')
+})
+
+test('the session gate counts new sessions of one project, never the asker', () => {
+  const now = 1_000_000_000
+  const records = [
+    { id: 'a', createdAt: now - 1, key: 'proj' },
+    { id: 'b', createdAt: now, key: 'proj' },
+    { id: 'c', createdAt: now, key: 'proj' },
+    { id: 'asking', createdAt: now, key: 'proj' },
+    { id: 'boundary', createdAt: now - 100, key: 'proj' },
+    { id: 'old', createdAt: now - 1000, key: 'proj' },
+    { id: 'elsewhere', createdAt: now, key: 'other' },
+    { id: 'untimed', key: 'proj' },
+  ]
+  assert.equal(countDreamSessions(records, { key: 'proj', currentId: 'asking', since: now - 100 }), 3)
+  assert.equal(countDreamSessions(records, { key: 'proj', currentId: 'asking', since: 0 }), 5)
+  assert.equal(countDreamSessions(records, { currentId: 'asking', since: 0 }), 6, 'no key means no project filter')
+  assert.equal(countDreamSessions(undefined, { key: 'proj', currentId: 'asking', since: 0 }), 0)
+})
+
+test('the project of the asking session is what the gate filters on', () => {
+  assert.equal(dreamSessionKey({ session: { header: { cwd: 'C:\\proj' } } }), projectKey('C:\\proj'))
+  // No cwd at all falls back to the process cwd, exactly as the roots resolver does.
+  assert.equal(dreamSessionKey({ session: { header: {} } }), projectKey(process.cwd()))
+  assert.equal(dreamSessionKey(undefined), projectKey(process.cwd()))
+})
+
+test('the session registries are merged by id, and a missing one is reported', async () => {
+  const header = (id, cwd = 'C:\\proj') => ({ id, cwd, createdAt: 1 })
+  const both = {
+    get: (name) =>
+      name === 'sessions'
+        ? { list: () => [{ header: header('live-1') }] }
+        : name === 'sessionPersistence'
+          ? { list: async () => [{ header: header('live-1', 'C:\\stale') }, { header: header('stored-2', 'C:\\other') }] }
+          : undefined,
+  }
+  const merged = await listDreamSessions(both, new AbortController().signal)
+  assert.deepEqual(
+    merged.map((record) => record.id),
+    ['live-1', 'stored-2'],
+    'stored sessions are added and a duplicate id is not listed twice',
+  )
+  assert.equal(merged[0].key, projectKey('C:\\proj'), 'the live header is the one that survives')
+  assert.equal(merged[1].key, projectKey('C:\\other'))
+  assert.equal(
+    await listDreamSessions({ get: () => undefined }, new AbortController().signal),
+    undefined,
+    'no registry at all must be distinguishable from no sessions',
+  )
 })
 
 /* ---------------- the generator's guide ---------------- */

@@ -85,7 +85,10 @@ const LAYERS = [
   ['config/config-write.js'],
   ['memory/render.js', 'memory/memory-pass.js', 'memory/memory-prompt.js', 'memory/memory-search.js', 'memory/imports.js', 'memory/excludes.js', 'session/trust.js', 'memory/jit.js', 'memory/transcript.js', 'memory/failure-pause.js', 'session/memory-switch.js', 'session/project-scopes.js', 'memory/commands-report.js'],
   ['host/http.js', 'host/update-surface.js'],
-  ['pipeline/memory-agent.js', 'pipeline/consumption-plan.js'],
+  // The three dream gates are pure policy over a clock, a root's recorded run and the harness's
+  // session registries, so they sit under the pass that consumes them — and under a module that a
+  // test can import without pulling in the memory pass, the model call or the lock.
+  ['pipeline/memory-agent.js', 'pipeline/consumption-plan.js', 'pipeline/dream-gate.js'],
   ['pipeline/consumption.js', 'pipeline/generation.js', 'pipeline/dream.js'],
   // The per-turn trigger COMPOSES the generation scheduler, so it sits above it while still
   // belonging to the pipeline: it owns the `turn/end` subscription and the turn counters, which

@@ -35,10 +35,10 @@ lib/client.js    浏览器半：设置面板 + 对话页的记忆按钮（一个
 | `lib/config/` | 5 | 配置词汇与它的写入路径：`config-rules` `scopes` `env` `config` `config-write` |
 | `lib/memory/` | 13 | 记忆领域：`memory-file` `memory-edit` `journal` `render` `memory-pass` `memory-prompt` `memory-search` `imports` `excludes` `jit` `transcript` `failure-pause` `commands-report` |
 | `lib/session/` | 3 | 谁在作用域内：`trust` `memory-switch` `project-scopes` |
-| `lib/pipeline/` | 6 | 两个半的编排：`memory-agent` `consumption-plan` `consumption` `generation` `dream` `turn-trigger` |
+| `lib/pipeline/` | 7 | 两个半的编排：`memory-agent` `consumption-plan` `consumption` `generation` `dream` `dream-gate` `turn-trigger` |
 | `lib/host/` | 8 | harness 看到的面：`service` `tools` `routes` `commands` `consumption-seam` `config-route` `http` `update-surface` |
 
-合计 40 个 host 模块 + `index.js`（接线）+ `client.js`（浏览器产物）= `lib/` 下 42 个 `.js`。
+合计 41 个 host 模块 + `index.js`（接线）+ `client.js`（浏览器产物）= `lib/` 下 43 个 `.js`。
 
 目录名是**职责**，不是层号：`core/` 里同时躺着 L0 的 `constants` 和 L2 的 `paths`。真正的层
 是下面那张表，守卫按**完整路径**判层。
@@ -55,7 +55,7 @@ lib/client.js    浏览器半：设置面板 + 对话页的记忆按钮（一个
 | L3 | `config/config-write` |
 | L4 | `memory/render` `memory/memory-pass` `memory/memory-prompt` `memory/memory-search` `memory/imports` `memory/excludes` `session/trust` `memory/jit` `memory/transcript` `memory/failure-pause` `session/memory-switch` `session/project-scopes` `memory/commands-report` |
 | L5 | `host/http` `host/update-surface` |
-| L6 | `pipeline/memory-agent` `pipeline/consumption-plan` |
+| L6 | `pipeline/memory-agent` `pipeline/consumption-plan` `pipeline/dream-gate` |
 | L7 | `pipeline/consumption` `pipeline/generation` `pipeline/dream` |
 | L8 | `pipeline/turn-trigger` |
 | L9 | `host/service` `host/tools` `host/routes` `host/commands` `host/consumption-seam` `host/config-route` |
@@ -73,6 +73,10 @@ lib/client.js    浏览器半：设置面板 + 对话页的记忆按钮（一个
   `core/update` 的返回值形状，不依赖 service，所以路由、命令、面板三条调用点共用它们，而不是各写一份。
 - **`pipeline/turn-trigger` 在 `generation` 之上（L8）**：它**组合**生成调度器，自己持有 `turn/end` 订阅与
   回合计数——正是这一点让 `index.js` 保持"接线"而不是变成一个事件处理器。
+- **`pipeline/dream-gate` 与 `consumption-plan` 同层（L6）**：两者都是"把下一步会不会发生"抽成纯函数——
+  `dream-gate` 的三道闸门（小时数、扫描节流、会话数）只吃调用方给的时钟、上次运行时间与会话 header，
+  所以能不起模型、不碰文件系统地测；`dream.js`（L7）只留机制：锁、状态文件、真正的 pass。这也把
+  `dream.js` 从 569 行压回 397 行，让它待在 500 行预算内。
 
 其余被守卫强制的不变量：
 
@@ -93,7 +97,8 @@ lib/client.js    浏览器半：设置面板 + 对话页的记忆按钮（一个
 | `lib/client.js` | 逻辑 ≤ 870 行、内联数据 ≤ 260 行 | 逻辑 818、内联数据 226 |
 
 host 的 500 行**有牙齿**：`routes.js` 撞线时拆出了 `config-route.js`、`http.js`，`commands.js` 撞线时
-拆出了 `update-surface.js`，`index.js` 撞线时把每回合的订阅搬去 `pipeline/turn-trigger.js`。
+拆出了 `update-surface.js`，`index.js` 撞线时把每回合的订阅搬去 `pipeline/turn-trigger.js`，`dream.js`
+撞线时把三道闸门搬去 `pipeline/dream-gate.js`（569 → 397 行）。
 client 的那条线是**防漂移**，不是"要加功能先删点东西"：它的上限设在当前形状之上，理由与裁定过程
 在 [`../CHANGELOG.md`](../CHANGELOG.md) 的「体积预算」一节。
 
@@ -107,7 +112,11 @@ client 的那条线是**防漂移**，不是"要加功能先删点东西"：它�
 `pipeline/generation` 组装转录（`memory/transcript` 的游标）→ `pipeline/memory-agent` 跑工具循环
 （`memory/memory-pass` 执行 `memory_write` / `memory_edit` / `memory_delete` 与 `target: daily` 的日刊）
 → 结果经 `memory/commands-report` 汇总，`host/service` 存下最近一次。那次 `turn/end` 订阅与回合计数
-在 `pipeline/turn-trigger` 里。
+在 `pipeline/turn-trigger` 里。同一回合还要过一次**巩固**决定：`pipeline/dream` 先看开关、拿根、抢
+`$DSH_HOME/.consolidate-lock`，再问 `pipeline/dream-gate` 的三道闸门——每根距上次运行的小时数、
+数会话这一步的节流窗口、以及该作用域自上次巩固以来的**新会话数**（`ctx.get('sessions')` 活会话 +
+`ctx.get('sessionPersistence')` 落盘会话，按 id 去重、比 `header.createdAt`；两个服务都不在时算
+"数不出来"，不巩固且报告）。三个条件都过才真跑 pass，跑完把该根的时间写回 `$DSH_HOME/dream-state.json`。
 
 **消费（consumption）**：`agent/pre-step` →（会话开关）→ `pipeline/consumption` 发现文件
 （`memory/excludes` 排除、`memory/imports` 展开 `@`、`memory/jit` 判条件加载、`session/trust` 过信任门）
@@ -147,7 +156,7 @@ npm run test:integration
 
 - **一个套件一个进程**。这不是风格问题：`DSH_HOME`、`DSH_MEMORY_DREAM`、被 patch 的
   `console.error` 都是进程级全局，合并跑会互相污染；runner 也不解析套件内部，只按**退出码**判成败。
-- `test/run.mjs` **递归**发现 `test/**/*.test.mjs`（18 个套件 / 504 项），逐个子进程执行，
+- `test/run.mjs` **递归**发现 `test/**/*.test.mjs`（18 个套件 / 513 项），逐个子进程执行，
   汇总各套件自己打印的计数；任一非零即失败。
 - `node test/*.test.mjs` 这类写法**跑不起来**（PowerShell 不给原生命令展开通配符；会展开的 shell 里
   node 只认第一个入口）。文档里凡是批量命令，先真跑一遍再写进去。

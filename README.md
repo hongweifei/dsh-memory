@@ -8,7 +8,7 @@
 | 版本 | `0.1.0`（**冻结**：做对齐本身不发布新版本，改动累积） |
 | 包名 | `@dsh-external/dsh-memory` |
 | 依据 | 真实 SDK（`@qoder-ai/qoder-agent-sdk@1.0.50`）**＋**本机 `qodercli` bundle 解码，不是文档推测 |
-| 测试 | **504 项全绿**（`npm test`，18 个套件）：unit 121 / integration 183（9 个主题套件）/ client 63 / memory-model 41 / update 27 / journal 20 / architecture 18 / memory-agent 18 / discovery 9（+1 skipped）/ resolveMeta 4 |
+| 测试 | **513 项全绿**（`npm test`，18 个套件）：unit 121 / integration 187（9 个主题套件）/ client 63 / memory-model 46 / update 27 / journal 20 / architecture 18 / memory-agent 18 / discovery 9（+1 skipped）/ resolveMeta 4 |
 | 依赖 | 仅 `@deepseek-ai/schemastery`（真正的 `Config` schema，**不在公共 npm 上**）与 `picomatch`（排除规则；Qoder 自己也是这个库） |
 | 文档 | [代码结构与开发](docs/architecture.md)（模块放哪、怎么加东西、测试怎么跑）· [Qoder 记忆模型](docs/qoder-memory-model.md)（解出的原件）· [记忆层归属](docs/memory-layers.md)（哪些层归 harness）· [CHANGELOG](CHANGELOG.md)（开发流水与每条修复的反证） |
 
@@ -132,7 +132,9 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
         midTurn: false        # true 时长回合中途也生成（Qoder 的实验开关 auto_memory_incremental_generation）
       dream:
         enabled: false        # 巩固 pass（Qoder 的 AutoDream），默认关：它多花一次模型调用
-        minHours: 24
+        minHours: 24          # 每根作用域距上次巩固满多少小时才考虑
+        minSessions: 5        # 该作用域自上次巩固以来至少新增多少个会话（0＝关掉这道闸门）
+        scanThrottleMinutes: 10  # 数会话这一步的节流窗口（0＝每次 turn 结束都数）
       # onResult: !!js '(r) => console.log("memory", r.status)'
     consumption:
       enabled: true
@@ -478,7 +480,7 @@ harness 也**没有"在文件管理器里打开"的能力**（曾实现过，按
 | `extractionEveryNTurns` 间隔门 | `generation.incremental.everyTurns`（含两种 bypass） |
 | `MOl` 增量转录游标 | `collectTranscript(session, sinceSeq)`（游标只在 pass 真跑过后推进） |
 | `path_glob_match`（just-in-time） | front-matter `paths` ⇒ 只有会话触及匹配路径才加载 |
-| `AutoDream`（时间闸门 + 锁） | `generation.dream` + `$DSH_HOME/.consolidate-lock`（Qoder 的文件名与一小时窗口） |
+| `AutoDream`（时间闸门 + 会话数闸门 + 扫描节流 + 锁） | `generation.dream`（`minHours` / `minSessions` / `scanThrottleMinutes`）+ `$DSH_HOME/.consolidate-lock`（Qoder 的文件名与一小时窗口）；会话数取自 `ctx.get('sessions')` + `sessionPersistence.list()`，不读 Qoder 的 `.jsonl` 工件目录（§10.3） |
 | `memory` / `memory_get` 工具名 | 本插件叫 `memory_list` / `memory_read`；`memory_search` 同名 |
 | Daily Memory Journal | `action:"add"` + `target:"daily"`（§6.6） |
 | `MEMORY_HEADLESS` 等环境变量 | `DSH_MEMORY_*`，同一套布尔词汇，环境优先 |
@@ -543,6 +545,16 @@ bundle 里（有测试对着它跑）。
 npm 安装**——"测试全绿"可能验的是旧版本。`test/support/harness-env.mjs` 因此优先找**正在运行**的那份
 （可用 `DSH_HARNESS_BUNDLE` 显式指定），找不到就跳过并说明。
 
+### 10.5 巩固的"会话数"从哪来
+
+Qoder 的 `minSessions` 数的是它自己会话工件目录里、**修改时间晚于该作用域上次巩固**的 `.jsonl`。本插件
+**不读那个目录**，而是用 Harness 自己的两个服务：`ctx.get('sessions').list()`（活会话）+ `ctx.get('sessionPersistence').list()`
+（已落盘会话），各取 `.header`、按 id 去重。理由是这样做才是 Harness 自己的写法（`dsh-workspace` 就是这么
+索引项目会话的），而且插件的 `fs` 接缝**根本拿不到 mtime**——本地的 `fs.stat` 只回 `{ version, type, size }`，
+`version` 是从 `dev:ino:size:mtimeNs:ctimeNs` 拼出的不透明串。代价是语义换成 **`header.createdAt`** 而不是
+工件 mtime：**被续接命中的老会话不会因为"刚动过"而计入**，只有真正新建的会话才算数。两个服务都不在时
+**门当作"数不出来"**（不巩固并在告警里说明），不是当作"数够了"。
+
 ## 11. 已知限制
 
 - **两处提示词片段解不出**（`qodercli` 的字符串表里没有，例如索引行数上限 `⟨lines⟩`），
@@ -565,7 +577,7 @@ npm 安装**——"测试全绿"可能验的是旧版本。`test/support/harness
 - 常用命令：
 
 ```powershell
-npm test                 # 全部 504 项（一个套件一个进程）
+npm test                 # 全部 513 项（一个套件一个进程）
 npm run test:unit        # 只跑路径含 unit 的套件
 npm run test:integration # 只跑 integration-* 套件
 npm run preview          # 渲染面板预览到 tools/preview.html

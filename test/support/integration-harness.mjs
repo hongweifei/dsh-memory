@@ -353,6 +353,46 @@ export function makeCtx(fs, llm) {
   }
 }
 
+/**
+ * `count` session records of one project, as the dream gate counts them.
+ *
+ * The header is what matters: `createdAt` defaults to now (i.e. newer than any
+ * recorded consolidation) and `cwd` decides the project key.
+ */
+export function sessionRecords(count, cwd = 'C:\\proj') {
+  return Array.from({ length: count }, (unused, index) => ({ id: `sess-${index + 1}`, cwd }))
+}
+
+/**
+ * Publish the Harness's two session registries, as the dream gate reads them.
+ *
+ * `sessions.list()` holds the open sessions, `sessionPersistence.list()` the
+ * stored ones — the same pair `dsh-workspace` reads. The plugin deliberately does
+ * not read `$DSH_HOME/sessions`, which belongs to another subsystem.
+ *
+ * @param ctx - the context double.
+ * @param registries - `{ live, stored }`, each a list of `{ id, cwd?, createdAt? }`.
+ * @returns how often each registry was listed, for the scan-throttle cases.
+ */
+export function provideSessions(ctx, registries = {}) {
+  const calls = { live: 0, stored: 0 }
+  const records = (entries) =>
+    (entries ?? []).map(({ id, cwd = 'C:\\proj', createdAt = Date.now() }) => ({ header: { id, cwd, createdAt } }))
+  ctx.provide('sessions', {
+    list: () => {
+      calls.live += 1
+      return records(registries.live)
+    },
+  })
+  ctx.provide('sessionPersistence', {
+    list: async () => {
+      calls.stored += 1
+      return records(registries.stored)
+    },
+  })
+  return calls
+}
+
 /** Call one registered web route with a Fetch Request. */
 export async function callRoute(routes, path, init) {
   const route = routes.get(path)

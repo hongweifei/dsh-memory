@@ -39,6 +39,8 @@ import {
   makeLog,
   SWITCH_STORE,
   switchFixture,
+  provideSessions,
+  sessionRecords,
 } from './support/integration-harness.mjs'
 
 let passed = 0
@@ -57,6 +59,9 @@ await test('a due dream runs with origin dream and records its result', async ()
     reason: 'merged duplicates',
   })
   const { ctx, listeners, services } = makeCtx(fs, makeLlm(plan))
+  // The session gate is satisfied here so the case is about the pass itself; the
+  // gate has its own cases below.
+  provideSessions(ctx, { stored: sessionRecords(5) })
   apply(
     ctx,
     loadConfig({
@@ -91,6 +96,7 @@ await test('a stale consolidation lock is reclaimed, not just ignored', async ()
     [`${HOME}\\.consolidate-lock`]: JSON.stringify({ pid: 999999, startedAt: Date.now() }),
   })
   const { ctx, listeners, services } = makeCtx(fs, makeLlm('{"writes":[],"reason":"nothing durable"}'))
+  provideSessions(ctx, { stored: sessionRecords(5) })
   apply(
     ctx,
     loadConfig({
@@ -167,6 +173,72 @@ await test('dream stays off unless it is enabled', async () => {
   listeners.get('session/event')[0](session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
   await services.get('memory').flushMemory()
   assert.equal(services.get('memory').status().lastDream, null, 'dream is opt-in')
+})
+
+/**
+ * Run completed turns through a fresh `apply()` and report what happened.
+ *
+ * Each case needs its own context: the scan throttle lives on the scheduler
+ * instance, so two checks in one process are not independent of each other.
+ *
+ * @param options - `{ dream, registries, provide, turns }`.
+ */
+async function dreamOnce(options = {}) {
+  const { dream, registries, provide = true, turns = 1 } = options
+  const fs = makeFs({ [USER_MEMORY]: '# Index\n\n- [A](a.md) - hook' })
+  const { ctx, listeners, services } = makeCtx(fs, makeLlm('{"writes":[],"reason":"nothing durable"}'))
+  const calls = provide ? provideSessions(ctx, registries) : { live: 0, stored: 0 }
+  apply(
+    ctx,
+    loadConfig({
+      mode: 'custom',
+      projectScope: false,
+      generation: { turnComplete: { minPromptChars: 1 }, dream: { enabled: true, minHours: 0, ...dream } },
+    }),
+  )
+  const session = makeSession(turnEvents('a long enough prompt for the gate', 'ok'), 'C:\\proj')
+  const agent = makeAgent(session)
+  for (let turn = 1; turn <= turns; turn += 1) {
+    endTurn(listeners, session, agent, turn)
+    // `flushMemory()` waits on the tracked background pass, dream included.
+    await services.get('memory').flushMemory()
+  }
+  return { calls, lastDream: services.get('memory').status().lastDream }
+}
+
+await test('a project that has produced fewer sessions than the gate needs does not consolidate', async () => {
+  const below = await dreamOnce({ registries: { stored: sessionRecords(4) } })
+  assert.equal(below.lastDream, null, 'four sessions is below the default gate of five')
+  const at = await dreamOnce({ registries: { stored: sessionRecords(5) } })
+  assert.equal(at.lastDream?.origin, 'dream', 'the fifth session opens the gate')
+})
+
+await test('the session gate counts this project only, and never the session asking', async () => {
+  const elsewhere = await dreamOnce({ registries: { stored: sessionRecords(5, 'C:\\elsewhere') } })
+  assert.equal(elsewhere.lastDream, null, "another project's sessions must not open the gate")
+  const mine = await dreamOnce({ registries: { stored: sessionRecords(5) } })
+  assert.equal(mine.lastDream?.origin, 'dream', 'five sessions of this project open it')
+  // Four of this project plus the session asking for the check: still four.
+  const self = await dreamOnce({
+    registries: { live: [{ id: 'session-1' }], stored: [...sessionRecords(4), { id: 'session-1' }] },
+  })
+  assert.equal(self.lastDream, null, 'the asking session never counts itself')
+})
+
+await test('the session scan runs once per throttle window', async () => {
+  // Four sessions: the gate stays shut, so nothing consolidates and the scheduler
+  // is free to check again on the next turn.
+  const throttled = await dreamOnce({ registries: { stored: sessionRecords(4) }, turns: 2 })
+  assert.equal(throttled.calls.live, 1, 'the second turn inside the window must not rescan')
+  const open = await dreamOnce({ dream: { scanThrottleMinutes: 0 }, registries: { stored: sessionRecords(4) }, turns: 2 })
+  assert.equal(open.calls.live, 2, 'with the throttle switched off, every opportunity scans')
+})
+
+await test('no session registry at all means no consolidation, and it is reported', async () => {
+  const blind = await dreamOnce({ provide: false })
+  assert.equal(blind.lastDream, null, 'an uncountable gate must not be treated as satisfied')
+  const seen = await dreamOnce({ registries: { stored: sessionRecords(5) } })
+  assert.equal(seen.lastDream?.origin, 'dream', 'the same install with the registry present consolidates')
 })
 
 await test('model writes may target a typed content file, not only the index', async () => {
