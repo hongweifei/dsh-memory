@@ -8,7 +8,7 @@
 | 版本 | `0.1.0`（**冻结**：做对齐本身不发布新版本，改动累积） |
 | 包名 | `@dsh-external/dsh-memory` |
 | 依据 | 真实 SDK（`@qoder-ai/qoder-agent-sdk@1.0.50`）**＋**本机 `qodercli` bundle 解码，不是文档推测 |
-| 测试 | **503 项全绿**（`npm test`，18 个套件）：unit 121 / integration 183（9 个主题套件）/ client 63 / memory-model 41 / update 26 / journal 20 / architecture 18 / memory-agent 18 / discovery 9（+1 skipped）/ resolveMeta 4 |
+| 测试 | **504 项全绿**（`npm test`，18 个套件）：unit 121 / integration 183（9 个主题套件）/ client 63 / memory-model 41 / update 27 / journal 20 / architecture 18 / memory-agent 18 / discovery 9（+1 skipped）/ resolveMeta 4 |
 | 依赖 | 仅 `@deepseek-ai/schemastery`（真正的 `Config` schema，**不在公共 npm 上**）与 `picomatch`（排除规则；Qoder 自己也是这个库） |
 | 文档 | [代码结构与开发](docs/architecture.md)（模块放哪、怎么加东西、测试怎么跑）· [Qoder 记忆模型](docs/qoder-memory-model.md)（解出的原件）· [记忆层归属](docs/memory-layers.md)（哪些层归 harness）· [CHANGELOG](CHANGELOG.md)（开发流水与每条修复的反证） |
 
@@ -233,6 +233,9 @@ Qoder 用「品牌前缀 + 名字」拼环境变量，布尔词汇是 `1/true/ye
 - **私有仓库/需要凭据**：git 以**非交互**方式跑（`GIT_TERMINAL_PROMPT=0`、`GIT_ASKPASS=''`、
   `GCM_INTERACTIVE=never`、不开 shell），认证不上就报 `unavailable`，**不会弹窗卡住启动**。
 - `dir` / `remote` / `branch` 是给"检出在别处"或"上游不叫 origin"的情况留的；平时全部留空即可。
+- **整段 `update` 不写也一样是 `check`**：默认值由 schema 补，启动照旧只 `fetch` 一次、不碰工作树。
+  这两条路径（不写 vs 写了 `mode: check`）都有用例钉住——`update` 那五个默认值在
+  `lib/config/config.js` 里只有**一个来源**（`UPDATE_DEFAULTS`），schema 只是引用它。
 
 > 这不是 Qoder 的契约项——Qoder 的 SDK 里没有自更新。放在这里是因为**插件的安装形态就是软链**，
 > 没有包管理器负责升级它；开关默认 `check` 而不是 `auto`，因为拉代码是**动你磁盘上文件**的操作。
@@ -562,7 +565,7 @@ npm 安装**——"测试全绿"可能验的是旧版本。`test/support/harness
 - 常用命令：
 
 ```powershell
-npm test                 # 全部 503 项（一个套件一个进程）
+npm test                 # 全部 504 项（一个套件一个进程）
 npm run test:unit        # 只跑路径含 unit 的套件
 npm run test:integration # 只跑 integration-* 套件
 npm run preview          # 渲染面板预览到 tools/preview.html

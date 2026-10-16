@@ -155,6 +155,16 @@ test('resolveMemoryConfig fills the plugin defaults', () => {
   assert.equal(resolved.consumption.maxTokens, undefined)
   assert.equal(resolved.consumption.overflow, 'truncate')
   assert.equal(resolved.consumption.failureMode, 'best_effort')
+  // Self-update ships ON and non-mutating: an install that was never configured must still report
+  // where it stands. `off` here would make the panel row disappear out of the box, and `auto` would
+  // pull code onto the disk without being asked — so the default is pinned, not left to the merge.
+  assert.deepEqual(resolved.update, {
+    mode: 'check',
+    dir: '',
+    remote: 'origin',
+    branch: '',
+    timeoutMs: 10000,
+  })
 })
 
 test('resolveMemoryConfig keeps explicit values over defaults', () => {

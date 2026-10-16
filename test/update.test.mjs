@@ -261,6 +261,19 @@ await test('the startup pass in check mode reports the verdict and never pulls',
   assert.equal(run.calls.some((call) => call.startsWith('pull')), false, 'check must not mutate the checkout')
 })
 
+await test('an install with no update block at all still checks once, and never pulls', async () => {
+  // The shipped default IS `check`: not "off unless configured". A config that never mentions
+  // `update` (the normal case — see `resolveMemoryConfig`) must still fetch exactly once at startup
+  // and leave the checkout alone, which is the whole promise of the default.
+  const run = fakeGit(BEHIND_CLEAN)
+  const service = createUpdateService({ config: {}, run })
+  assert.equal(service.mode(), 'check')
+  const result = await service.start()
+  assert.equal(result.status, 'behind', 'the verdict is reported, not swallowed')
+  assert.equal(run.calls.filter((call) => call.startsWith('fetch')).length, 1, 'one fetch, no more')
+  assert.equal(run.calls.some((call) => call.startsWith('pull')), false, 'the default never mutates')
+})
+
 await test('the startup pass in auto mode fast-forwards exactly one clean behind checkout', async () => {
   const run = fakeGit(BEHIND_CLEAN)
   const service = createUpdateService({ config: { update: { mode: 'auto' } }, run })

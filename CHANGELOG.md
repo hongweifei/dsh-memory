@@ -52,7 +52,7 @@
 - 启动检查**不 await**（慢远端不该拖住插件接线），但一定写日志：没人提的更新没人会装；失败只 warn，
   远端坏了不该让用户失去记忆功能。
 
-验证：`npm test` 18 个套件 / **503 项全绿**；新增 `test/update.test.mjs` **26 项**——判决表、假 runner 的
+验证：`npm test` 18 个套件 / **504 项全绿**；新增 `test/update.test.mjs` **27 项**——判决表、假 runner 的
 九种局面（不是仓库/游离 HEAD/取回失败/落后/领先/分叉/缺远端跟踪引用/干净快进/脏树拒绝/无事可做不拉/
 拉取失败/mode off 零调用），以及**真实离线 git 仓库**（bare origin + clone + 多推一个提交：
 落后 → 应用 → 已最新、脏树被拒且工作树存活、面板与 `/memory-update` 的面、`mode: off` 一处 git 都不跑）。
@@ -73,6 +73,19 @@ at all」红；非 `behind` 判决仍投 `apply` ⇒ 请求体断言红（`{acti
 `turn/end` 订阅与回合计数从 `index.js` 搬出）、`config/env.js`（93），`test/architecture.test.mjs` 的
 `LAYERS` 同步登记。文档同步：README §4.1/§4.4/§8.3/§8.4/§9/§11/§12、`docs/architecture.md`
 （模块数与分层表、体积现状、第三条数据流、套件数）、`docs/images/` 三张截图重出。
+
+补充：**"不写 `update` 也会自动检查"这件事现在被钉住了**（用户确认默认口径就是 `check`）。`test/unit.test.mjs`
+新增一段：`resolveMemoryConfig({})` / 经 schema 两条路径上的 `update` 都必须是
+`{mode:'check', dir:'', remote:'origin', branch:'', timeoutMs:10000}`；`test/update.test.mjs` 新增
+「an install with no update block at all still checks once, and never pulls」（`config: {}` ⇒ 恰好一次
+`fetch`、零次 `pull`、判决照常报出）。写这条防线时先揪出一个**诱饵默认值**：`UPDATE_DEFAULTS.mode: 'check'`
+当时并不生效——schema 里另写了字面量 `.default('check')`，它先填充、随后把常量整个盖掉，所以"改常量"是
+静默无效的。已把 schema 的五处默认值改成引用 `UPDATE_DEFAULTS.*`，并把 `UPDATE_DEFAULTS.timeoutMs` 也
+接回 `UPDATE_TIMEOUT_MS`：`UPDATE_TIMEOUT_MS → UPDATE_DEFAULTS → schema` 是一条链、一个数，没有第二处
+字面量。负面对照三条，全部真红、注入后逐个文件 `git hash-object` 与注入前逐字节相同：把
+`UPDATE_DEFAULTS.mode` 改成 `off` ⇒ `test/unit.test.mjs` 红；`core/update.js` 里"未配置时的兜底值"改成
+`off` ⇒ `test/update.test.mjs` 红；`UPDATE_TIMEOUT_MS` 改成 `5_000` ⇒ `test/unit.test.mjs` 红（默认值
+确实沿这条链走到解析结果，而不是各自写死）。
 
 **写入预算整块删除——Qoder 没有这两个字段（2026-10-16）**
 

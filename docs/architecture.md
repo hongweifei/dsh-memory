@@ -147,7 +147,7 @@ npm run test:integration
 
 - **一个套件一个进程**。这不是风格问题：`DSH_HOME`、`DSH_MEMORY_DREAM`、被 patch 的
   `console.error` 都是进程级全局，合并跑会互相污染；runner 也不解析套件内部，只按**退出码**判成败。
-- `test/run.mjs` **递归**发现 `test/**/*.test.mjs`（18 个套件 / 503 项），逐个子进程执行，
+- `test/run.mjs` **递归**发现 `test/**/*.test.mjs`（18 个套件 / 504 项），逐个子进程执行，
   汇总各套件自己打印的计数；任一非零即失败。
 - `node test/*.test.mjs` 这类写法**跑不起来**（PowerShell 不给原生命令展开通配符；会展开的 shell 里
   node 只认第一个入口）。文档里凡是批量命令，先真跑一遍再写进去。
