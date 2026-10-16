@@ -5,8 +5,8 @@
  * recovering it means decoding all of them and reading the pieces in order.
  * Output goes to a file because the text is long.
  *
- * Run: node test/dump-qodercli-strings.mjs [minLength]
- *      QODERCLI_BUNDLE=<path to qodercli.js> node test/dump-qodercli-strings.mjs
+ * Run: node tools/dump-qodercli-strings.mjs [minLength]
+ *      QODERCLI_BUNDLE=<path to qodercli.js> node tools/dump-qodercli-strings.mjs
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'

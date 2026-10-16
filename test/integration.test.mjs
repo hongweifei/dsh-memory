@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict'
 import { pathToFileURL } from 'node:url'
 import { apply, Config, LARGE_FILE_CHARS } from '../lib/index.js'
-import { resolveInstalled } from './harness-env.mjs'
+import { resolveInstalled } from './support/harness-env.mjs'
 
 /** Pin the harness home so the user scope resolves into the fixture filesystem. */
 const HOME = 'C:\\home\\.dsh'

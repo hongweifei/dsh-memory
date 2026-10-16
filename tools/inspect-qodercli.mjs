@@ -6,8 +6,8 @@
  * base64 XOR'd with a repeating key. This script decodes what it needs and
  * prints the facts recorded in `docs/qoder-memory-model.md`.
  *
- * Run: node test/inspect-qodercli.mjs [--strings <filter>]
- *      QODERCLI_BUNDLE=<path to qodercli.js> node test/inspect-qodercli.mjs
+ * Run: node tools/inspect-qodercli.mjs [--strings <filter>]
+ *      QODERCLI_BUNDLE=<path to qodercli.js> node tools/inspect-qodercli.mjs
  *
  * Prints nothing and explains itself when qodercli is not installed, so it is
  * safe to run anywhere.

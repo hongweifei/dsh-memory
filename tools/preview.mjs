@@ -7,7 +7,7 @@
  * substitute for the live page (which the harness serves inside its own
  * settings shell).
  *
- * Run: node test/preview.mjs   →  test/preview.html
+ * Run: node tools/preview.mjs   →  tools/preview.html
  */
 import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'

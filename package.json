@@ -36,6 +36,13 @@
     "CHANGELOG.md"
   ],
   "license": "MIT",
+  "scripts": {
+    "test": "node test/run.mjs",
+    "test:unit": "node test/run.mjs unit",
+    "test:integration": "node test/run.mjs integration",
+    "preview": "node tools/preview.mjs",
+    "shots": "node tools/shots.mjs"
+  },
   "dependencies": {
     "@deepseek-ai/schemastery": "3.18.4",
     "picomatch": "^4.0.7"

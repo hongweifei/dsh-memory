@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { packageJsonPath, profilePackageJson, resolveInstalled } from './harness-env.mjs'
+import { packageJsonPath, profilePackageJson, resolveInstalled } from './support/harness-env.mjs'
 
 let passed = 0
 let skipped = 0
@@ -37,7 +37,7 @@ const testIf = (condition, label, fn) => {
 console.log('dsh-memory package-shape tests')
 
 // Discovered, never hardcoded: through the profile when this runs inside a harness
-// session, else straight from the checkout. See test/harness-env.mjs.
+// session, else straight from the checkout. See test/support/harness-env.mjs.
 const pkgJsonPath = packageJsonPath()
 const installed = resolveInstalled('@dsh-external/dsh-memory/package.json') !== undefined
 const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf8'))

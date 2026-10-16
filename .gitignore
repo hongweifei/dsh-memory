@@ -10,11 +10,11 @@ TODO.md
 
 # Generated artifacts.
 #
-# `preview.html` is written by `node test/preview.mjs` and removed again by
-# `node test/shots.mjs`; the screenshots under test/shots/ ARE documentation and are
+# `tools/preview.html` is written by `node tools/preview.mjs` and removed again by
+# `node tools/shots.mjs`; the screenshots under docs/images/ ARE documentation and are
 # committed. `_qoder-memory-strings.txt` is the bundle-string dump from
-# `node test/dump-qodercli-strings.mjs`.
-test/preview.html
+# `node tools/dump-qodercli-strings.mjs`.
+tools/preview.html
 docs/_qoder-memory-strings.txt
 
 # OS / editor noise.

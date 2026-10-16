@@ -5,7 +5,7 @@
  * row, which no panel screenshot can show. This prints its exact label, `data-state` and title for
  * every mode, so the words a user reads can be checked rather than assumed.
  *
- * Run: node test/composer.mjs [auto|project|off]
+ * Run: node tools/composer.mjs [auto|all|user|project|off]
  */
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'

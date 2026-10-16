@@ -1,11 +1,11 @@
 /**
- * Regenerate the three committed panel screenshots.
+ * Regenerate the three committed panel screenshots under docs/images/.
  *
  * The preview must be pinned and cached-busted: Edge caches `file://` by URL, so
  * each capture goes to a unique name, and headless Edge reports
  * `prefers-color-scheme: dark`, so the theme is always pinned.
  *
- * Run: node test/shots.mjs
+ * Run: node tools/shots.mjs
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, renameSync, rmSync } from 'node:fs'
@@ -30,7 +30,7 @@ for (const [index, shot] of shots.entries()) {
     env: { ...process.env, PREVIEW_LOCALE: shot.locale, PREVIEW_THEME: shot.theme },
     stdio: 'inherit',
   })
-  const target = join(here, 'shots', shot.name)
+  const target = join(here, '..', 'docs', 'images', shot.name)
   // A fresh URL each time: Edge caches file:// responses by URL.
   const url = `file:///${join(here, 'preview.html').replaceAll('\\', '/')}?shot=${index}`
   execFileSync(edge, ['--headless=new', '--disable-gpu', '--hide-scrollbars', '--window-size=820,2200', `--screenshot=${target}`, url], {

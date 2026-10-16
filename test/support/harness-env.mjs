@@ -8,7 +8,7 @@
  * need one report themselves as skipped rather than failing on a path that exists on
  * exactly one machine.
  *
- * Run from a checkout: `node test/<name>.test.mjs`.
+ * Run from a checkout: `node test/<name>.test.mjs` (or `npm test` for everything).
  */
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /** This checkout's root (the directory holding `package.json`). */
-export const checkoutRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+export const checkoutRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 /** The harness home, by the harness's own rule: `$DSH_HOME`, else `<home>/.dsh`. */
 export const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')

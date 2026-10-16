@@ -10,7 +10,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { packageJsonPath, profilePackageJson } from './harness-env.mjs'
+import { packageJsonPath, profilePackageJson } from './support/harness-env.mjs'
 
 let passed = 0
 const test = (label, fn) => {
@@ -84,7 +84,7 @@ function resolveMeta(pkgJsonPath, cache, sourceKey) {
   return resolved
 }
 
-// The manifest, discovered rather than hardcoded (see test/harness-env.mjs), and the
+// The manifest, discovered rather than hardcoded (see test/support/harness-env.mjs), and the
 // URL-shaped cache key the client-modules service derives for a profile install. The key
 // only has to have the real shape: these tests use it as the map key that shows a cached
 // `null` winning over a later, fixed manifest.

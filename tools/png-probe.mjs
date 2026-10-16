@@ -5,7 +5,7 @@
  * normalise, so read the pixels directly. Handles the non-interlaced 8-bit
  * RGB/RGBA truecolour PNGs Chrome/Edge emit.
  *
- * Run: node test/png-probe.mjs <file.png> [...]
+ * Run: node tools/png-probe.mjs <file.png> [...]
  */
 import { readFileSync } from 'node:fs'
 import { inflateSync } from 'node:zlib'

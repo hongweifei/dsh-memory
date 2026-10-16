@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import React from 'react'
 import TestRenderer from 'react-test-renderer'
-import { resolveInstalled, runningHarnessBundle } from './harness-env.mjs'
+import { resolveInstalled, runningHarnessBundle } from './support/harness-env.mjs'
 
 const { act } = TestRenderer
 
@@ -1601,7 +1601,7 @@ await test('the stylesheet is prefixed and self-injected', () => {
 await test('the preview harness defines the same real token names', () => {
   // The invented-token bug originated here: the preview declared its own
   // `:root` with made-up names, and the panel copied them. Check both sides.
-  const preview = readFileSync(join(here, 'preview.mjs'), 'utf8')
+  const preview = readFileSync(join(here, '..', 'tools', 'preview.mjs'), 'utf8')
   const declared = new Set([...preview.matchAll(/^\s*(--dsw-[a-z0-9-]+):/gm)].map((match) => match[1]))
   assert.ok(declared.size > 15, `the preview must define the theme, found ${declared.size} tokens`)
   const used = new Set([...source.matchAll(/var\((--dsw-[a-z0-9-]+)/g)].map((match) => match[1]))
@@ -1612,7 +1612,7 @@ await test('the preview harness defines the same real token names', () => {
 await test('both preview themes define every token the panel uses', () => {
   // A token defined only in the light set would leave dark mode unstyled. Both
   // palettes must cover the whole vocabulary the panel references.
-  const preview = readFileSync(join(here, 'preview.mjs'), 'utf8')
+  const preview = readFileSync(join(here, '..', 'tools', 'preview.mjs'), 'utf8')
   const block = (name) => {
     const match = preview.match(new RegExp(`const ${name} = \`([\\s\\S]*?)\``))
     assert.ok(match, `${name} must exist in preview.mjs`)
