@@ -78,7 +78,8 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
 ## 3. 快速上手
 
 1. 按 §2 装好并重启，`Settings → Memory` 能看到面板。
-2. 想改注入上限，先把**模式**切成 `custom`（面板第一行就能改，见 §4.2）。
+2. 注入上限**默认 5000 token**，不用配；想改（包括改成完全不设上限）先把**模式**切成 `custom`
+   （面板第一行就能改，见 §4.2）。
 3. 正常聊几轮，然后 `/memory` 看最近一次生成/消费；不确定记忆有没有进上下文，按面板的「预览」。
 4. 让 agent 主动记东西：主模型有 `memory` 工具（`action: write|edit|...`），见 §8.2。
 
@@ -138,7 +139,7 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
       # onResult: !!js '(r) => console.log("memory", r.status)'
     consumption:
       enabled: true
-      # maxTokens: 2000         # 可选。不写＝不设上限（默认，与 Qoder 相同）；写了必须是正整数
+      # maxTokens: 5000         # 可选。不写＝默认 5000 token；写了必须是正整数，或 'unlimited'（不设上限）
       overflow: truncate       # truncate（截断到放得下）| fail_query（放不下就报错）
       failureMode: best_effort # best_effort（单个文件读失败也继续）| fail_query（报错）
       # files:                 # custom 模式下替代自动发现
@@ -169,15 +170,24 @@ Copy-Item "$harness\@standard-schema\spec" 'node_modules\@standard-schema\' -Rec
 （按加载顺序），只剩一个时才对它做截断。**模型自己的输出**上限是另一个旋钮
 （`generation.maxOutputTokens`），两者互不相干。
 
-**注入上限默认不设——与 Qoder 一致**：`consumption.maxTokens` 是**可选**的，**不写就是不设上限**
-（Qoder 的加载器就是 `maxTokens ?? Number.POSITIVE_INFINITY`，它的设置里也没有"记忆注入预算"这一项）。
-要设就设**正整数**：schema 是 `natural().min(1)`、SDK 也要求正整数，所以 `0` 在配置层就被拒绝，
-到不了渲染层；**要完全不注入就设 `consumption.enabled: false`**。那个下限是**一个共享常量**
-（`CONSUMPTION_MIN_TOKENS`）：schema、`/api/memory/budget` 路由、面板输入框的 `min` 都读它。
-面板里**留空即不设上限**（保存时清掉这个键，而不是写 0），命令行是 `/memory-budget unlimited`。
+**注入上限默认 5000 token**：`consumption.maxTokens` 是**可选**的，**不写就是默认的 5000 token**——
+记忆永远有界，不会一路长到把对话挤出去。要改就写**正整数**：schema 是 `natural().min(1)`、SDK 也要求
+正整数，所以 `0` 在配置层就被拒绝，到不了渲染层；**要完全不注入就设 `consumption.enabled: false`**。
+那个下限是**一个共享常量**（`CONSUMPTION_MIN_TOKENS`）：schema、`/api/memory/budget` 路由、面板输入框的
+`min` 都读它。默认的 5000 也是**一个共享常量**（`CONSUMPTION_DEFAULT_TOKENS`）。
 
-> 本插件第一版把 `maxTokens` 默认成 `2000`。那**不是** Qoder 的默认值，是移植时自己定的；
-> 默认不设上限之后，"没配过"与"配了一个上限"才在行为上真正区分开。
+**「不设上限」是显式的，写法是字符串 `'unlimited'`**：`maxTokens: unlimited` 表示不设上限；不写这个键
+表示**用默认值**，两件事不再共用一种拼写。为什么不用 `null`：Loader 回写条目配置时走的是
+`Config.simplify`，而 schemastery 的 `simplify` 会**丢掉对象里的 `null` 值**——`null` 会在下一次回写时
+从 profile 里消失，部署就悄悄退回默认上限了。字符串能原样存活，也和任何 token 数不会混淆。
+面板里它是数字框**旁边的一个勾选框**（不是清空输入框），命令行是 `/memory-budget unlimited`；
+`/memory-budget default` 删掉这个键、回到默认值。
+
+> 这与 Qoder 的默认**不同**，是有意的：Qoder 的加载器是 `maxTokens ?? Number.POSITIVE_INFINITY`
+> （不写＝不设上限），它的设置表里也没有"记忆注入预算"这一项。本插件**给了记忆一个有界的默认**，
+> 因为注入的上下文是要和对话抢位置的——不设上限意味着记忆文件一多就会把对话挤掉。
+> 与 Qoder 的偏离只在这一条：**默认值有界**；上限的**语义**（超了先整文件丢弃、再对最后一个截断）
+> 与 Qoder 一致。
 
 **`maxOutputTokens` 默认 0**：本插件第一版抄了 Qoder `summarizer-*` 任务类型的 `2e3`，那是给摘要的，
 而 pass 是**用工具调用写文件**的——文件正文就在工具参数里，固定小上限会让推理模型在吐出工具调用之前
@@ -404,7 +414,7 @@ pass 内部**多写一个文件——pass 本来就在跑，所以开启日刊�
 | `/memory` | 状态：作用域、信任判定、最近一次生成/消费、变更与告警明细 |
 | `/memory-switch [auto\|all\|user\|project\|off\|status]` | **会话级**记忆模式（§7） |
 | `/memory-scope [status\|all\|project\|user]` | **全局**作用域（§7）：每个 `auto` 会话跟随的那一层 |
-| `/memory-budget [status\|<tokens>]` | **注入上限**（§8.4）：与面板同一个写入器 |
+| `/memory-budget [status\|<tokens>\|unlimited\|default]` | **注入上限**（§8.4）：与面板同一个写入器 |
 | `/memory-trust [allow\|deny\|list] [folder]` | 目录信任（写入 `$DSH_HOME/trusted-folders.json`） |
 | `/memory-imports [status\|allow\|deny]` | **会话级**外部导入授权（授权后立即重新加载） |
 | `/memory-update [status\|check\|apply]` | **自更新**（§4.4）：`check` 真去 `fetch`，`apply` 只在落后且工作树干净时快进 |
@@ -427,8 +437,9 @@ pass 内部**多写一个文件——pass 本来就在跑，所以开启日刊�
 （自动记录 + 记忆巩固 + 日刊）——前两项各算一项，开关是三张控件、一个保存。
 它们共用同一个写入器与同一套规则（`host/config-route.js`：收窄 → 用真 schema 校验 → `configEditor.edit`）。
 除模式与全局作用域外，其余各项都是 `generation.*` / `consumption.*`，**在 `native` 下会被拒绝**，
-所以面板在那里对它们只报告值、不给控件。**注入上限那个框留空就是"不设上限"**（默认）：保存时删掉
-`consumption.maxTokens` 这个键，而不是写 0——"没配过"和"配了一个上限"因此是两件不同的事。
+所以面板在那里对它们只报告值、不给控件。**注入上限是一个数字框加一个「不设上限」勾选框**：
+数字框写正整数，勾选框写 `unlimited`（与配置里同一个拼写）。空着的数字框不是"不设上限"——
+部署有**默认上限 5000**，勾选框才是那个显式的选择。
 （写入那一侧已经没有对应的控件了：`maxWrites` / `maxWriteBytes` 已整块删除，见 §4.2。）
 
 **作用域区放在最底是有意的**：它是唯一会**无限增长**的区块（每个有记忆的项目一行），放在控件上方会把
@@ -463,7 +474,7 @@ harness 也**没有"在文件管理器里打开"的能力**（曾实现过，按
 | `trust` | 目录信任的授予与撤销 |
 | `switch` | 会话级模式（读要会话，写要会话） |
 | `update` | 自更新（§4.4）：`{action:'check'\|'apply'}`，别的输入是 400 |
-| `budget` / `generation` / `scope` / `mode` | 面板可写项（`budget` 收正整数或 `null`，`null`＝清掉上限） |
+| `budget` / `generation` / `scope` / `mode` | 面板可写项（`budget` 收正整数或 `'unlimited'`，`'unlimited'`＝不设上限） |
 
 ## 9. 与 Qoder 的契约映射
 
@@ -478,6 +489,7 @@ harness 也**没有"在文件管理器里打开"的能力**（曾实现过，按
 | `@` 导入（`ImportProcessor`） | 同语法/标记/`tree`·`flat`/`maxDepth: 5`；授权=配置 ∨ 项目 ∨ **会话** |
 | 每次请求重建记忆块 | `agent/pre-step` 每步重投影 + 哈希；**未变则静默探测，变了才发增量** |
 | `extractionEveryNTurns` 间隔门 | `generation.incremental.everyTurns`（含两种 bypass） |
+| 注入预算（`maxTokens ?? Infinity`：**默认不设上限**） | **默认 5000 token**（`consumption.maxTokens`）；「不设上限」是显式的 `'unlimited'`——见 §4.2 的偏离说明 |
 | `MOl` 增量转录游标 | `collectTranscript(session, sinceSeq)`（游标只在 pass 真跑过后推进） |
 | `path_glob_match`（just-in-time） | front-matter `paths` ⇒ 只有会话触及匹配路径才加载 |
 | `AutoDream`（时间闸门 + 会话数闸门 + 扫描节流 + 锁） | `generation.dream`（`minHours` / `minSessions` / `scanThrottleMinutes`）+ `$DSH_HOME/.consolidate-lock`（Qoder 的文件名与一小时窗口）；会话数取自 `ctx.get('sessions')` + `sessionPersistence.list()`，不读 Qoder 的 `.jsonl` 工件目录（§10.3） |

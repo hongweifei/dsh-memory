@@ -12,7 +12,7 @@ import { FAILURE_PAUSE_DEFAULT, advanceFailurePause, pausedOutcome, resumePaused
 import { collectTouchedPaths, isJitActive, jitDecision, parseJitTrigger } from '../lib/memory/jit.js'
 import { indexWarnings } from '../lib/memory/memory-file.js'
 import { applyEdit } from '../lib/memory/memory-edit.js'
-import { GLOBAL_CONSEQUENCE, MODE_CONSEQUENCE } from '../lib/memory/commands-report.js'
+import { GLOBAL_CONSEQUENCE, MODE_CONSEQUENCE, describeBudgetCap, parseBudgetAction } from '../lib/memory/commands-report.js'
 import {
   Config,
   estimateMessage,
@@ -73,6 +73,8 @@ import {
   MODES,
   pruneForNative,
   CONSUMPTION_MIN_TOKENS,
+  CONSUMPTION_DEFAULT_TOKENS,
+  CONSUMPTION_UNLIMITED,
   GLOBAL_SCOPE_CHOICES,
   scopeFields,
   describeGlobalScopes,
@@ -129,10 +131,11 @@ test('the nested blocks stay sparse so the SDK rules remain checkable', () => {
   // No field defaults inside generation/consumption: an absent key must stay
   // absent, because native mode only accepts `onResult` and
   // `turnComplete.enabled` conflicts with `generation.enabled: false`.
+  // The injection cap is NOT among them: it has a default (5000 tokens), and the
+  // unbounded case is the explicit string `"unlimited"` rather than the key's absence.
   const value = accepted({})
   assert.equal(value.generation.enabled, undefined)
   assert.equal(value.generation.prompt, undefined)
-  assert.equal(value.consumption.maxTokens, undefined)
   assert.equal(value.consumption.overflow, undefined)
 })
 
@@ -149,10 +152,10 @@ test('resolveMemoryConfig fills the plugin defaults', () => {
     timeoutMs: 10000,
     onGateError: 'skip',
   })
-  // The injection cap has NO default: Qoder's own contract is an absent field, and its loader turns
-  // that into `Number.POSITIVE_INFINITY`. A number here would be this port inventing a cap nobody set
-  // — which is what the 2000 that shipped first was.
-  assert.equal(resolved.consumption.maxTokens, undefined)
+  // The injection cap DEFAULTS to a number: a deployment that says nothing about the budget still
+  // gets a bounded one, so memory cannot grow until it crowds out the conversation. The unbounded
+  // case is explicit (`"unlimited"`), not the absence of the key.
+  assert.equal(resolved.consumption.maxTokens, CONSUMPTION_DEFAULT_TOKENS)
   assert.equal(resolved.consumption.overflow, 'truncate')
   assert.equal(resolved.consumption.failureMode, 'best_effort')
   // Self-update ships ON and non-mutating: an install that was never configured must still report
@@ -173,6 +176,43 @@ test('resolveMemoryConfig keeps explicit values over defaults', () => {
   )
   assert.equal(resolved.generation.prompt, 'only deploys')
   assert.equal(resolved.consumption.maxTokens, 500)
+})
+
+test('the injection budget has a default, and "no cap" is an explicit spelling', () => {
+  // The default is the whole point: a deployment that says nothing about the budget still gets a
+  // bounded one, so memory cannot grow until it crowds out the conversation.
+  assert.equal(resolveMemoryConfig(accepted({ mode: 'custom' })).consumption.maxTokens, CONSUMPTION_DEFAULT_TOKENS)
+  assert.equal(CONSUMPTION_DEFAULT_TOKENS, 5000, 'the default budget is 5000 tokens')
+
+  // The unbounded case is a STRING, and it must survive the Loader's configuration write-back —
+  // schemastery's `simplify` drops a `null` value inside an object, so `maxTokens: null` would
+  // vanish from the persisted profile and the deployment would silently fall back to the default.
+  const unlimited = resolveMemoryConfig(accepted({ mode: 'custom', consumption: { maxTokens: CONSUMPTION_UNLIMITED } }))
+  assert.equal(unlimited.consumption.maxTokens, CONSUMPTION_UNLIMITED)
+  const simplified = Config.simplify(Config({ mode: 'custom', consumption: { maxTokens: CONSUMPTION_UNLIMITED } }))
+  assert.equal(simplified.consumption.maxTokens, CONSUMPTION_UNLIMITED, 'the write-back keeps it')
+
+  // A `null` is NOT the spelling of "no cap": it is what the panel sends to say "clear this
+  // field", and accepting it in the configuration would give one value two meanings.
+  //
+  // The schema cannot catch it — schemastery's resolver short-circuits a null value BEFORE the
+  // union is tried — so the refusal lives in the cross-field rules, which `apply()` runs.
+  assert.equal(accepted({ mode: 'custom', consumption: { maxTokens: null } }).consumption.maxTokens, null)
+  assert.throws(
+    () => validateMemoryConfig(accepted({ mode: 'custom', consumption: { maxTokens: null } })),
+    /maxTokens/,
+    'the rules must refuse a null cap',
+  )
+})
+
+test('the injection budget refuses a zero or a fractional count', () => {
+  assert.throws(() => accepted({ mode: 'custom', consumption: { maxTokens: 0 } }), /maxTokens/)
+  assert.throws(() => accepted({ mode: 'custom', consumption: { maxTokens: 1.5 } }), /maxTokens/)
+  assert.throws(() => accepted({ mode: 'custom', consumption: { maxTokens: '5000' } }), /maxTokens/)
+  assert.throws(() => accepted({ mode: 'custom', consumption: { maxTokens: 'lots' } }), /maxTokens/)
+  // The legal forms: a positive integer, or the explicit "no cap".
+  assert.doesNotThrow(() => accepted({ mode: 'custom', consumption: { maxTokens: 1 } }))
+  assert.doesNotThrow(() => accepted({ mode: 'custom', consumption: { maxTokens: CONSUMPTION_UNLIMITED } }))
 })
 
 test('there is no write budget at all — Qoder has neither field', () => {
@@ -353,18 +393,29 @@ test('over budget drops broadest scope first, truncates the last', () => {
   assert.ok(measure([{ content: [{ type: 'text', text: out.text }] }]) <= 300)
 })
 
-test('an absent cap means NO limit, and every file is injected', () => {
-  // The default, and Qoder's own: `maxTokens ?? Number.POSITIVE_INFINITY`. This used to be asserted as
-  // "zero budget injects nothing", which was a different contract (`0` is refused by the schema anyway).
-  const out = renderMemoryContext([file('user:MEMORY.md', 'x'.repeat(4000)), file('project:MEMORY.md', 'y'.repeat(4000))], undefined, measure)
+test('an unbounded cap injects every file', () => {
+  // "No cap" is the explicit string the configuration uses. The renderer must read it as "no cap"
+  // and not as a token count — a naive comparison would treat it as a budget of NaN tokens and
+  // drop every file.
+  const files = [file('user:MEMORY.md', 'x'.repeat(4000)), file('project:MEMORY.md', 'y'.repeat(4000))]
+  const out = renderMemoryContext(files, CONSUMPTION_UNLIMITED, measure)
   assert.deepEqual(out.included, ['user:MEMORY.md', 'project:MEMORY.md'])
   assert.deepEqual(out.omitted, [])
   assert.deepEqual(out.truncated, [])
   assert.equal(out.overflowed, undefined)
   assert.match(out.text, /project:MEMORY\.md/)
-  // A delta goes through the same seam, so an unlimited cap cannot drop changes either.
-  const delta = renderMemoryDelta({ changed: [file('user:MEMORY.md', 'x'.repeat(4000))], removed: [] }, undefined, measure)
+  // A delta goes through the same seam, so an unbounded cap cannot drop changes either.
+  const delta = renderMemoryDelta({ changed: [file('user:MEMORY.md', 'x'.repeat(4000))], removed: [] }, CONSUMPTION_UNLIMITED, measure)
   assert.match(delta.text, /user:MEMORY\.md/)
+})
+
+test('the render layer treats an absent cap as unbounded too', () => {
+  // The resolver always supplies a cap, so this is the layer's own contract rather than a
+  // configuration state: an absent budget must not be read as "a budget of zero tokens".
+  const out = renderMemoryContext([file('user:MEMORY.md', 'x'.repeat(4000))], undefined, measure)
+  assert.deepEqual(out.included, ['user:MEMORY.md'])
+  assert.deepEqual(out.omitted, [])
+  assert.equal(out.overflowed, undefined)
 })
 
 test('a truncated index carries Qoder own notice, a topic file does not', () => {
@@ -902,9 +953,12 @@ test('the environment overrides the scopes, the dream pass, and can switch memor
 
   // Environment wins over an explicit setting, as it does in Qoder's headless path.
   assert.equal(resolveMemoryConfig({ userScope: true }, { DSH_MEMORY_USER: 'false' }).userScope, false)
-  // And nothing else is reachable from the environment. The cap stays ABSENT — no limit — which is
-  // what a config with no cap resolves to; an env var must not invent one either.
-  assert.equal(resolveMemoryConfig({}, { DSH_MEMORY_TOKEN_BUDGET: '10' }).consumption.maxTokens, undefined)
+  // And nothing else is reachable from the environment. The cap keeps its DEFAULT — an env var
+  // must not invent a cap of its own either.
+  assert.equal(
+    resolveMemoryConfig({}, { DSH_MEMORY_TOKEN_BUDGET: '10' }).consumption.maxTokens,
+    CONSUMPTION_DEFAULT_TOKENS,
+  )
 })
 
 /* ================= turn pacing ================= */
@@ -1447,6 +1501,36 @@ test('every session mode has a consequence sentence, and a global state has one 
   for (const state of ['all', 'project', 'user', 'none']) {
     assert.equal(typeof GLOBAL_CONSEQUENCE[state], 'string', `GLOBAL_CONSEQUENCE is missing "${state}"`)
   }
+})
+
+test('the /memory-budget vocabulary is one answer per action', () => {
+  // The command's actions, and the two that name a SETTING rather than a count. `unlimited` and
+  // `default` are the two ways to say "not a number", and they must not be confused: one removes
+  // the cap, the other restores the default one.
+  assert.deepEqual(parseBudgetAction(''), { kind: 'status' })
+  assert.deepEqual(parseBudgetAction('status'), { kind: 'status' })
+  assert.deepEqual(parseBudgetAction('STATUS'), { kind: 'status' })
+  assert.deepEqual(parseBudgetAction('unlimited'), { kind: 'unlimited' })
+  assert.deepEqual(parseBudgetAction('default'), { kind: 'default' })
+  assert.deepEqual(parseBudgetAction('1500'), { kind: 'tokens', tokens: 1500 })
+  assert.deepEqual(parseBudgetAction(' 1500 '), { kind: 'tokens', tokens: 1500 })
+
+  // Everything else is refused, and the refusal names what was typed.
+  for (const bad of ['lots', '0', '-5', '1.5', '1e3', 'null']) {
+    const parsed = parseBudgetAction(bad)
+    assert.equal(parsed.kind, 'invalid', `"${bad}" must not parse as a setting`)
+    assert.equal(parsed.action, bad)
+  }
+})
+
+test('the /memory-budget status line names the default and the unbounded case', () => {
+  // The report must not print the marker string `unlimited` where a token count belongs.
+  assert.equal(describeBudgetCap(CONSUMPTION_UNLIMITED, CONSUMPTION_DEFAULT_TOKENS), 'injection cap: no limit')
+  assert.equal(
+    describeBudgetCap(CONSUMPTION_DEFAULT_TOKENS, CONSUMPTION_DEFAULT_TOKENS),
+    'injection cap: 5000 tokens (the default is 5000)',
+  )
+  assert.equal(describeBudgetCap(1500, CONSUMPTION_DEFAULT_TOKENS), 'injection cap: 1500 tokens (the default is 5000)')
 })
 
 /* ---------------- the config writer ---------------- */

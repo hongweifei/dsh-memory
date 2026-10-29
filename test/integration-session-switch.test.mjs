@@ -756,11 +756,14 @@ await test('the budget route writes the injection cap through configEditor', asy
   assert.equal(numeric.json.maxTokens, 900)
 })
 
-await test('the budget route CLEARS the cap with null — the one spelling of "no limit"', async () => {
-  // Qoder's own contract is an ABSENT field (`maxTokens ?? Number.POSITIVE_INFINITY`), so "no limit"
-  // must DELETE the key rather than persist a zero (which the schema refuses) or an Infinity (which is
-  // not JSON). The persisted result is asserted key by key, and then the plugin is loaded from it: an
-  // absence that the plugin would reject would be worse than a wrong number.
+await test('the budget route REMOVES the cap with "unlimited" — the one spelling of "no limit"', async () => {
+  // "No limit" is EXPLICIT now: the deployment has a DEFAULT cap, so the unbounded case is a
+  // spelling of its own — the string `unlimited`. It is deliberately not `null`: the Loader writes
+  // an entry's configuration back through `Config.simplify`, and schemastery's `simplify` drops a
+  // `null` value inside an object, so a `null` sentinel would vanish from the persisted profile.
+  //
+  // The persisted result is asserted key by key, and then the plugin is loaded from it: a
+  // configuration the plugin would reject would be worse than a wrong number.
   const fs = makeFs({})
   const { ctx, routes, services } = makeCtx(fs, makeLlm('{}'))
   apply(ctx, loadConfig({ mode: 'custom', generation: { turnComplete: { enabled: false } } }))
@@ -774,27 +777,26 @@ await test('the budget route CLEARS the cap with null — the one spelling of "n
     },
   })
 
-  const cleared = await callRoute(routes, '/api/memory/budget', { method: 'POST', body: { maxTokens: null } })
+  const cleared = await callRoute(routes, '/api/memory/budget', { method: 'POST', body: { maxTokens: 'unlimited' } })
   assert.equal(cleared.status, 200)
-  assert.equal(cleared.json.maxTokens, null, 'the reply says the cap is gone, not zero')
+  assert.equal(cleared.json.maxTokens, 'unlimited', 'the reply says the cap is gone, not zero')
   assert.equal(edits, 1)
   assert.deepEqual(current, {
     enabled: true,
     mode: 'custom',
-    consumption: { overflow: 'truncate' },
+    consumption: { maxTokens: 'unlimited', overflow: 'truncate' },
     trust: { folders: ['x'] },
-  }, 'the key is REMOVED, and every sibling survives')
-  assert.ok(!('maxTokens' in current.consumption))
+  }, 'the marker is persisted, and every sibling survives')
 
   // What was persisted is a configuration the plugin still activates on, and it reports NO cap.
   const again = makeCtx(makeFs({}), makeLlm('{}'))
   apply(again.ctx, loadConfig(current))
-  assert.equal((await callRoute(again.routes, '/api/memory/status')).json.maxTokens, undefined)
+  assert.equal((await callRoute(again.routes, '/api/memory/status')).json.maxTokens, 'unlimited')
 })
 
-await test('/memory-budget reports and clears the cap, and says "no limit" instead of a number', async () => {
+await test('/memory-budget reports the cap, removes it, and restores the default', async () => {
   // The command and the panel share one writer, so the same contract must be reachable from both. The
-  // command is also where "no limit" is spelled out in words, which is what an empty control shows.
+  // command is also where "no limit" is spelled out in words, and where the DEFAULT is named.
   const capped = switchFixture({ config: { consumption: { maxTokens: 2000 } } })
   let current = { mode: 'custom', consumption: { maxTokens: 2000, overflow: 'truncate' } }
   capped.services.set('configEditor', {
@@ -805,22 +807,29 @@ await test('/memory-budget reports and clears the cap, and says "no limit" inste
   })
 
   const status = await runCommand(capped.commands, 'memory-budget')
-  assert.match(status.text, /injection cap: 2000 tokens/)
+  assert.match(status.text, /injection cap: 2000 tokens \(the default is 5000\)/)
 
   const cleared = await runCommand(capped.commands, 'memory-budget', { rawInput: 'unlimited' })
   assert.equal(cleared.kind, 'success')
   assert.match(cleared.text, /no limit/)
-  assert.ok(!('maxTokens' in current.consumption), 'the command deletes the key, exactly like the route')
+  assert.equal(current.consumption.maxTokens, 'unlimited', 'the command writes the marker, exactly like the route')
 
-  // A deployment with no cap configured says so in words — the default, and Qoder's own.
+  // "default" is the OTHER way of saying "not a number": it REMOVES the key, so the resolver
+  // applies the default cap again. The two must not be confused with each other.
+  const restored = await runCommand(capped.commands, 'memory-budget', { rawInput: 'default' })
+  assert.equal(restored.kind, 'success')
+  assert.ok(!('maxTokens' in current.consumption), '"default" removes the key')
+
+  // A deployment that configured no cap reports the DEFAULT — a number, not a marker.
   const uncapped = switchFixture()
   const bare = await runCommand(uncapped.commands, 'memory-budget')
-  assert.match(bare.text, /no limit \(the default, like Qoder\)/)
+  assert.match(bare.text, /injection cap: 5000 tokens \(the default is 5000\)/)
 
-  // And a bogus action names both legal forms rather than guessing at a number.
+  // And a bogus action names every legal form rather than guessing at a number.
   const bogus = await runCommand(uncapped.commands, 'memory-budget', { rawInput: 'lots' })
   assert.equal(bogus.kind, 'error')
   assert.match(bogus.text, /unlimited/)
+  assert.match(bogus.text, /default/)
 })
 
 await test('the budget route refuses a value the schema would refuse, and says how to inject nothing', async () => {
@@ -836,15 +845,17 @@ await test('the budget route refuses a value the schema would refuse, and says h
 
   // 0 is the interesting one: it is not a budget at all, and the schema and the SDK both refuse it, so
   // a route that accepted it would write a configuration the plugin rejects. The refusal names both
-  // legal ways out — a positive integer, or `null` for no limit — and how to inject nothing at all.
+  // legal ways out — a positive integer, or `"unlimited"` for no cap — and how to inject nothing at all.
   const zero = await callRoute(routes, '/api/memory/budget', { method: 'POST', body: { maxTokens: 0 } })
   assert.equal(zero.status, 400)
   assert.match(zero.json.error, /at least 1/)
+  assert.match(zero.json.error, /unlimited/, 'the refusal names the way to have no cap')
   assert.match(zero.json.error, /turn consumption off/, 'the refusal says how to really inject nothing')
 
   // `Number('')` is 0 and `Number(true)` is 1: neither may become a silent configuration change.
-  // (`null` is NOT in this list: it is the one legal way to ask for no cap, tested below.)
-  for (const bad of ['', '  ', 'abc', '1.5', '1e3', '0x10', true, undefined, -5, {}, []]) {
+  // `null` IS in this list now: it is what the panel's wire protocol used to send for "clear this",
+  // and the configuration has no meaning for it any more — the marker string has that job.
+  for (const bad of ['', '  ', 'abc', '1.5', '1e3', '0x10', true, undefined, -5, null, {}, []]) {
     const response = await callRoute(routes, '/api/memory/budget', { method: 'POST', body: { maxTokens: bad } })
     assert.equal(response.status, 400, `maxTokens=${JSON.stringify(bad)} must be refused`)
   }
@@ -860,15 +871,16 @@ await test('the budget route refuses a value the schema would refuse, and says h
   assert.match(noWriter.json.error, /no configEditor/)
 })
 
-await test('the status route publishes the legal floor for the cap', async () => {
-  // The panel needs the floor to render `min` on its input, and it cannot import a Host module — so
-  // the value rides on the status payload, from the one constant the schema also uses.
+await test('the status route publishes the floor, the default, and the marker', async () => {
+  // The panel needs all three to render its control, and it cannot import a Host module — so they
+  // ride on the status payload, from the same constants the schema and the route use.
   const { routes } = switchFixture()
   const { json } = await callRoute(routes, '/api/memory/status')
   assert.equal(json.minTokens, 1)
-  // No cap configured is reported as NO cap — not as a number. Qoder's default is an absent field.
-  assert.equal(json.maxTokens, undefined)
-  assert.ok(!('maxTokens' in JSON.parse(JSON.stringify(json))), 'an absent cap must not ride the wire')
+  assert.equal(json.defaultTokens, 5000)
+  assert.equal(json.unlimited, 'unlimited')
+  // No cap configured resolves to the DEFAULT — a number the panel can show, not an absence.
+  assert.equal(json.maxTokens, 5000)
 })
 
 await test('writing the cap in `native` mode is REFUSED, and the plugin keeps activating', async () => {
@@ -912,8 +924,8 @@ await test('writing the cap in `native` mode is REFUSED, and the plugin keeps ac
   apply(again.ctx, loadConfig(persisted))
   assert.equal(
     (await callRoute(again.routes, '/api/memory/status')).json.maxTokens,
-    undefined,
-    'the plugin still loads, with no cap (its default)',
+    5000,
+    'the plugin still loads, with the default cap',
   )
 })
 

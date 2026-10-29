@@ -199,6 +199,11 @@ const STATUS = {
   maxTokens: 2000,
   // The legal floor for the cap, from the status payload so the client needs no Host import.
   minTokens: 1,
+  // The DEFAULT cap: what an unconfigured deployment enforces. The panel names it in its hint.
+  defaultTokens: 5000,
+  // The one spelling of "no cap" — the panel writes it with this exact string, so the panel and the
+  // configuration cannot disagree about what "no cap" means.
+  unlimited: 'unlimited',
   // Whether `consumption.*` may be written here at all: `mode: native` refuses every override, so the
   // panel must report the value without offering an edit. The real status route always sends this.
   consumptionWritable: true,
@@ -373,9 +378,9 @@ await test('the panel renders the full status, scopes, budget, and activity', as
   //
   // The injection cap is the ONE editable control, so it renders an input holding the current value
   // plus a save button — attributes live in the JSON projection, since `collectText` renders tag
-  // NAMES only. The old read-only row claimed "0 = inject nothing", which the configuration never
-  // allowed; the hint now says how to really inject nothing.
-  assert.match(text, /Injection cap \(tokens\)\n<input><button>Save/)
+  // NAMES only. "No cap" is a TICK beside the number, not an empty box: the deployment has a
+  // DEFAULT cap, so an empty box could not mean "unbounded" without making the default unspellable.
+  assert.match(text, /Injection cap \(tokens\)\n<div><input><label><input>.*<button>Save/s)
   assert.match(text, /How much memory may enter the context/)
   // Attribute order follows the object literal, so match the attributes themselves rather than a
   // whole run: the row is now rendered by the shared `Editor` and its props were regrouped.
@@ -383,6 +388,9 @@ await test('the panel renders the full status, scopes, budget, and activity', as
   assert.match(json, /"className":"dshmem-input dshmem-number"/)
   assert.match(json, /"min":1/)
   assert.match(json, /"value":"2000"/)
+  // The tick is a real control, and it is labelled.
+  assert.match(json, /"type":"checkbox"/)
+  assert.match(text, /No cap/)
   assert.match(text, /If it does not fit \(truncate \| fail_query\)\n<span>truncate\n/)
   assert.match(text, /If a file fails to load \(best_effort \| fail_query\)\n<span>best_effort\n/)
   // The generation side belongs in the same section: one budget without the other is how
@@ -837,30 +845,32 @@ await test('the panel keeps the cap editable wherever the plugin accepts it', as
   assert.doesNotMatch(json, /Read-only in mode/)
 })
 
-await test('the panel shows "no limit" when the Host publishes no cap', async () => {
-  // Qoder's default is an ABSENT cap, so the Host sends no value at all. The box is then EMPTY with a
-  // placeholder saying why — an empty control with no explanation reads as unset/broken — and the row
-  // must never print `undefined` or a number nobody set (the old panel rendered `2000` from its own
-  // default, which is exactly the invented cap this contract removed).
-  const { text, json } = await renderWithStatus({ ...STATUS, maxTokens: undefined })
-  assert.match(json, /"placeholder":"no limit"/)
-  assert.match(json, /"value":""/)
-  assert.doesNotMatch(json, /"value":"undefined"/)
-  assert.match(text, /How much memory may enter the context/)
+await test('the panel shows "no cap" when the Host publishes the unlimited marker', async () => {
+  // "No cap" is EXPLICIT: the Host publishes the string `unlimited` as the cap, and the panel says
+  // so in words rather than printing the marker where a token count belongs. The box still shows a
+  // number — the DEFAULT — because an unbounded deployment has no cap to show.
+  const { text, json } = await renderWithStatus({ ...STATUS, maxTokens: 'unlimited' })
+  // The tick beside the number box is TICKED, and the marker string is never printed as the value.
+  assert.match(json, /"type":"checkbox","className":"dshmem-checkbox","checked":true/)
+  assert.doesNotMatch(text, /<span>unlimited/)
+  // The box shows the DEFAULT, because an unbounded deployment has no cap of its own to show.
+  assert.match(json, /"type":"number"[^}]*"value":"5000"/)
+  assert.match(text, /The default is 5000 tokens/)
 
-  // The read-only form (`native`) says it in words rather than rendering an empty cell.
-  const native = await renderWithStatus({ ...STATUS, maxTokens: undefined, mode: 'native', consumptionWritable: false })
-  assert.match(native.text, /Injection cap \(tokens\)\n<span>no limit/)
+  // The read-only form (`native`) says it in words rather than offering the edit.
+  const native = await renderWithStatus({ ...STATUS, maxTokens: 'unlimited', mode: 'native', consumptionWritable: false })
+  assert.match(native.text, /Injection cap \(tokens\)\n<span>no cap/)
 })
 
-await test('the cap control writes a number, and an EMPTY box clears it — null, not zero', async () => {
-  // The write path, driven for real. An empty box is "no limit", whose one wire spelling is `null`
-  // (the route then DELETES the key, as Qoder's absent field). Zero would be a different statement,
-  // and Infinity is not JSON.
+await test('the cap control writes a number, and the tick writes "no cap"', async () => {
+  // The write path, driven for real. The number box writes a token count; the tick beside it writes
+  // the string the Host publishes as `status.unlimited` — one spelling, so the panel cannot write a
+  // value the configuration would refuse. A zero would be a different statement (and the schema
+  // refuses it), and `Infinity` is not valid JSON.
   const posted = []
   const registration = loadBundle(async (url, init) => {
     if (init !== undefined) posted.push({ url: String(url), body: init.body })
-    return { ok: true, json: async () => (String(url).includes('/status') ? STATUS : { ok: true, maxTokens: null }) }
+    return { ok: true, json: async () => (String(url).includes('/status') ? STATUS : { ok: true, maxTokens: 'unlimited' }) }
   })
   const clientPlugin = registration.factory((specifier) => React)
   const { registrations, locale } = registerComponent(clientPlugin)
@@ -877,26 +887,40 @@ await test('the cap control writes a number, and an EMPTY box clears it — null
   // write-budget row is gone, and a positional lookup would silently edit a different field if another
   // one is ever added (a trap this suite has hit twice before).
   const find = () => renderer.root.findAll((node) => node.type === 'input' && String(node.props.className).includes('dshmem-number'))[0]
+  // The tick beside it, addressed by CLASS too: a positional lookup would find the number box.
+  const findTick = () => renderer.root.findAll((node) => node.type === 'input' && String(node.props.className).includes('dshmem-checkbox'))[0]
+  // The cap's OWN Save. The number box's parent is the toolbar that now holds the box AND the tick,
+  // so the button lives one level further out — and a lookup from the box would find nothing. It is
+  // addressed by CLASS *and* by its position: the panel has other buttons (the mode switch), and
+  // "the first button on the page" would be one of those.
+  const findSave = () =>
+    renderer.root.findAll((node) => node.type === 'button' && String(node.props.className).includes('dshmem-btn'))
+      .find((node) => node.parent?.parent?.findAll?.((child) => child.type === 'input' && String(child.props.className).includes('dshmem-number')).length > 0)
   assert.equal(find().props.value, '2000', 'the persisted cap is what the box shows')
+  assert.equal(findTick().props.checked, false, 'the tick is unticked while the cap is a number')
 
   await act(async () => {
     find().props.onChange({ target: { value: '1500' } })
   })
   await act(async () => {
-    find().parent.findAll((node) => node.type === 'button')[0].props.onClick()
+    findSave().props.onClick()
     await Promise.resolve()
   })
   assert.equal(posted.at(-1).url, '/api/memory/budget')
   assert.deepEqual(JSON.parse(posted.at(-1).body), { maxTokens: 1500 })
 
   await act(async () => {
-    find().props.onChange({ target: { value: '' } })
+    findTick().props.onChange({ target: { checked: true } })
   })
   await act(async () => {
-    find().parent.findAll((node) => node.type === 'button')[0].props.onClick()
+    findSave().props.onClick()
     await Promise.resolve()
   })
-  assert.deepEqual(JSON.parse(posted.at(-1).body), { maxTokens: null }, 'an empty box is "no limit"')
+  assert.deepEqual(
+    JSON.parse(posted.at(-1).body),
+    { maxTokens: 'unlimited' },
+    'the tick writes the marker the configuration uses, not null',
+  )
   renderer.unmount()
 })
 

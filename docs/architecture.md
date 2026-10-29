@@ -120,8 +120,8 @@ client 的那条线是**防漂移**，不是"要加功能先删点东西"：它�
 
 **消费（consumption）**：`agent/pre-step` →（会话开关）→ `pipeline/consumption` 发现文件
 （`memory/excludes` 排除、`memory/imports` 展开 `@`、`memory/jit` 判条件加载、`session/trust` 过信任门）
-→ `memory/render` 在 `consumption.maxTokens` 下投影整块并逐文件哈希（**不设上限**——即该键缺席，
-Qoder 的默认——时整块直接注入，丢弃/截断那套逻辑根本不进）→ 未变则静默、变了才发增量。
+→ `memory/render` 在 `consumption.maxTokens` 下投影整块并逐文件哈希（该值是**默认的 5000 token**；
+写 `'unlimited'` 时整块直接注入，丢弃/截断那套逻辑根本不进）→ 未变则静默、变了才发增量。
 `pipeline/consumption-plan` 把"下一步会怎样"抽成纯函数，供面板预览只读复用。
 
 **自更新（self-update）**：插件装成**指向本检出的软链**，所以"升级"就是让这个检出快进。
@@ -163,12 +163,17 @@ npm run test:integration
 - 套件失败没有 `process.exit` 契约：靠未捕获异常 / 未处理的 rejection 退 1。所以同步计数器
   的套件**必须**把 async 回调 await 掉（`pending` + 汇总前 `Promise.all`），否则会先打印
   `ok` 与汇总、再崩——打印出来的"全绿"是一句假话。
+- **集成套件是照 Windows 文件系统写的**（`C:\home\.dsh`、`C:\proj`），这是本插件的部署环境。在 POSIX
+  上 `path.join` 给出的是另一种拼写，夹具里的文件因此读不到，`integration-*` 与 `discovery` 会**在
+  早先的断言上就停住**——这是环境限制，不是缺陷。改到那些套件里的东西时，"套件和改动前一样红"
+  **不能**当作验证：那些断言根本没跑到。因此凡是跨文件系统要成立的行为，都另有一个到处都能跑的
+  套件（`test/budget.test.mjs` 就是为注入预算准备的），或者把相关断言提取出来单独跑。
 
 ```
 test/
   run.mjs                  runner
   *.test.mjs               套件：architecture / unit / client / discovery / resolve-meta /
-                           journal / memory-agent / memory-model / update /
+                           journal / memory-agent / memory-model / update / budget /
                            integration-*（10 个主题）
   support/                 公共助手：harness-env（定位 harness 与安装）、integration-harness（替身与夹具）
 tools/                     开发工具：preview / shots / png-probe / inspect-qodercli /

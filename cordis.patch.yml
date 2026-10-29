@@ -28,7 +28,7 @@
 #           shouldGenerate: !!js 'async (input) => ({ run: input.prompt.length >= 40 })'
 #         onResult: !!js '(r) => console.log("memory generation", r.status)'
 #       consumption:
-#         maxTokens: 2000
+#         maxTokens: 5000         # 注入上限；省略＝默认 5000 token；写 'unlimited'＝不设上限
 #         overflow: truncate
 #         failureMode: best_effort
 #         onResult: !!js '(r) => console.log("memory consumption", r.status)'

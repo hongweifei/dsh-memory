@@ -28,6 +28,34 @@
 
 ### 新增
 
+**注入预算默认 5000 token，「不设上限」改成显式的 `'unlimited'`（2026-10-29）**
+
+- 用户裁定：默认注入预算设为 5000。此前本插件的默认是**不设上限**（照 Qoder 的
+  `maxTokens ?? Number.POSITIVE_INFINITY`），记忆文件一多就会把对话的上下文挤掉；给记忆一个
+  有界的默认值是这次改动的全部动机。
+- **默认值是一个常量**：`CONSUMPTION_DEFAULT_TOKENS = 5000`（`core/constants.js`），schema、解析器、
+  状态载荷、面板提示都读它。配置里**不写** `consumption.maxTokens` 就是这个值。
+- **「不设上限」必须显式**，写法是字符串 `maxTokens: 'unlimited'`。理由是**两条**且都是 Harness 侧的：
+  ① Loader 回写条目配置时走的是 `Config.simplify`，而 schemastery 的 `simplify` 会**丢掉对象里的
+  `null` 值**——`null` 哨兵会在下一次回写时从 profile 里消失，部署就悄悄退回默认上限；
+  ② `null` 本来就是面板线路协议里「清空这个字段」的形状，同一个值在两处含义不同就会出事。
+  字符串两样都躲得过，且和任何 token 数不会混淆。
+- **`null` 现在被规则层拒绝**：schema 挡不住它——schemastery 的解析器在试 union **之前**就把空值
+  短路了，所以 `maxTokens: null` 能通过 schema 并以真值到达规则层。`config-rules.js` 现在显式判定
+  「合法值只有正整数和 `'unlimited'`」，`null` 落到那里被拒。
+- **写入侧**：`POST /api/memory/budget` 收正整数或 `'unlimited'`（原先是 `null`）；`/memory-budget`
+  收 `status` / `<tokens>` / `unlimited` / `default`，其中 `default` **删掉**这个键、回到默认值
+  （原先 `unlimited` 删键，现在删键＝回到默认，两件事不再共用一种拼写）。
+- **面板**：注入上限从「一个数字框」改成「**一个数字框 + 一个「不设上限」勾选框**」。空着的数字框
+  不再表示"不设上限"——部署有默认上限，勾选框才是那个显式的选择。只读那一行把 `'unlimited'` 渲染成
+  「不设上限」而不是把标记字符串印出来；注入预览在无上限时不再显示「占用 N／unlimited」。
+- **新增 `test/budget.test.mjs`**（8 项）：本仓库的集成套件是照 Windows 文件系统写的（`C:\proj`），
+  在 POSIX 上跑不了，所以注入预算的契约单独有一个到处都能跑的套件——它驱动**真实的**路由、命令与
+  渲染器，只换文件系统。它钉住的就是这次改动最容易坏的几处：默认值、标记字符串在
+  `Config.simplify` 里的存活、渲染器把标记读成"无上限"、identity 区分两种预算、路由与命令的写入。
+- 与 Qoder 的偏离只有**一条**：默认值有界。上限的**语义**（超了先整文件丢弃、再对最后一个截断）
+  与 Qoder 一致。README §4.2 与 §9 都写明了这条偏离。
+
 **补齐 Qoder 的另外两道巩固闸门：会话数与扫描节流（2026-10-16）**
 
 - 起因：Qoder 的 AutoDream 有**三道**闸门，本插件此前只移植了一道（`minHours`）。解码

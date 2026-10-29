@@ -64,10 +64,12 @@ await test('the status route reports configuration, scopes, and files', async ()
   assert.equal(status, 200)
   assert.equal(json.enabled, true)
   assert.equal(json.mode, 'custom')
-  // No cap is configured, and no cap is what the payload says: Qoder's own default is an absent
-  // field (`maxTokens ?? Infinity`), so this port must not report a number nobody set.
-  assert.equal(json.maxTokens, undefined)
-  assert.ok(!('maxTokens' in JSON.parse(JSON.stringify(json))), 'an absent cap must not ride the wire')
+  // No cap is configured, so the DEFAULT cap applies and the payload says so: the panel must be
+  // able to show what an unconfigured deployment actually enforces.
+  assert.equal(json.maxTokens, 5000)
+  assert.equal(json.defaultTokens, 5000, 'the default cap rides along, so the panel can name it')
+  assert.equal(json.minTokens, 1)
+  assert.equal(json.unlimited, 'unlimited', 'the panel writes "no cap" with the same spelling')
   assert.equal(json.gate.kind, 'minPromptChars')
   assert.equal(json.gate.minPromptChars, 40)
   const user = json.roots.find((root) => root.id === 'user')
@@ -324,13 +326,20 @@ await test('turnComplete gates only the automatic trigger, not the half', () => 
 
 await test('consumption.maxTokens must be a positive integer WHEN IT IS SET', () => {
   // The schema enforces this before apply() ever runs, mirroring the SDK's positive-integer
-  // requirement. The SDK's rule is conditional: an ABSENT field is legal and means no limit.
+  // requirement. The SDK's rule is conditional: an ABSENT field is legal — and resolves to this
+  // plugin's DEFAULT cap.
   assert.throws(() => loadConfig({ mode: 'custom', consumption: { maxTokens: 1.5 } }), /maxTokens/)
   assert.throws(() => loadConfig({ mode: 'custom', consumption: { maxTokens: 0 } }), /maxTokens/)
-  // Absent and explicit are both accepted — and an absent one resolves to "no cap".
+  // Absent and explicit are both accepted — and an absent one resolves to the default cap.
   assert.doesNotThrow(() => loadConfig({ mode: 'custom' }))
-  assert.equal(resolveMemoryConfig(Config({ mode: 'custom' })).consumption.maxTokens, undefined)
+  assert.equal(resolveMemoryConfig(Config({ mode: 'custom' })).consumption.maxTokens, 5000)
   assert.equal(resolveMemoryConfig(Config({ mode: 'custom', consumption: { maxTokens: 42 } })).consumption.maxTokens, 42)
+  // The unbounded case is the explicit marker string, not an absent field and not `null`.
+  assert.doesNotThrow(() => loadConfig({ mode: 'custom', consumption: { maxTokens: 'unlimited' } }))
+  assert.equal(
+    resolveMemoryConfig(Config({ mode: 'custom', consumption: { maxTokens: 'unlimited' } })).consumption.maxTokens,
+    'unlimited',
+  )
 })
 
 await test('turnComplete.timeoutMs must be a positive finite number', () => {
